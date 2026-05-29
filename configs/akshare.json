@@ -1,0 +1,70 @@
+{
+  "data": {
+    "source": "akshare",
+    "csv_path": "data/sample_prices.csv",
+    "adjust": "qfq",
+    "asset_type": "etf"
+  },
+  "strategy": {
+    "type": "etf_rotation",
+    "id": "etf_rotation_v1",
+    "lookback_days": 20,
+    "rebalance_days": 5,
+    "top_n": 2,
+    "min_momentum": -0.02,
+    "symbols": ["510300", "510500", "512100", "518880"]
+  },
+  "execution": {
+    "account_mode": "mock",
+    "enable_live_orders": false,
+    "lot_size": 100,
+    "default_limit_slippage_bps": 5,
+    "min_trade_fee": 5,
+    "stock_sell_tax_bps": 5
+  },
+  "risk": {
+    "allowed_symbols": ["510300", "510500", "512100", "518880"],
+    "live_allowed_symbols": [],
+    "max_single_order_value": 60000,
+    "max_daily_trade_value": 120000,
+    "max_symbol_weight": 0.55,
+    "trading_start": "09:30",
+    "trading_end": "14:55",
+    "manual_kill_switch_path": "KILL_SWITCH",
+    "max_consecutive_rejections": 3,
+    "max_intraday_drawdown_pct": 0.03,
+    "max_total_drawdown_pct": 0.08,
+    "portfolio": {
+      "max_total_exposure": 0.8,
+      "max_industry_weight": 0.6,
+      "max_daily_entries": 3,
+      "max_correlation": 0.85,
+      "max_single_symbol_weight": 1.0,
+      "industry_map_path": "data/industry_map.csv",
+      "correlation_window": 60
+    }
+  },
+  "broker": {
+    "kind": "mock",
+    "starting_cash": 100000,
+    "qmt_proxy_base_url": "http://localhost:8000"
+  },
+  "backtest": {
+    "starting_cash": 100000,
+    "commission_bps": 2,
+    "slippage_bps": 5
+  },
+  "cache": {
+    "enabled": true,
+    "db_path": "data/cache.db",
+    "max_age_days": 30
+  },
+  "ops": {
+    "pipeline_output_dir": "runs",
+    "alerts_path": "reports/monitor_alerts.jsonl",
+    "dashboard_path": "reports/dashboard.html",
+    "notifier": {
+      "type": "console"
+    }
+  }
+}

@@ -1,0 +1,4 @@
+﻿symbol,status,signal_close,total_score,short_term_bias,medium_term_bias,entry_price,pre_entry_invalidation_price,stop_loss_price_if_entry_fills,take_profit_price_if_entry_fills,trailing_stop_pct,round_trip_fee_pct,assumed_order_value,estimated_round_trip_fee,minimum_order_value_for_30bps_fee_drag,news_score,news_summary,news_url
+512100,entry_candidate,1.28,73.48,rule_constructive,rule_constructive,1.2969,1.2181,1.2342,1.4098,0.035156,0.0015,10000.0,15.0,3333.33,0.2,Sample positive broad sector liquidity note,
+518880,watch_only,4.9,70.31,rule_watchlist,rule_watchlist,4.949,4.704,4.751,5.3053,0.03,0.0015,10000.0,15.0,3333.33,-0.1,Sample mildly negative gold-related macro note,
+510500,watch_only,7.03,63.65,rule_watchlist,rule_watchlist,7.1003,6.7488,6.8163,7.6115,0.03,0.0015,10000.0,15.0,3333.33,0.05,Sample neutral small/mid-cap ETF news input,

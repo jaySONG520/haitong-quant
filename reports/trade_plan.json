@@ -1,0 +1,111 @@
+﻿{
+  "research_only": true,
+  "generated_at": "2026-05-29T20:44:15",
+  "config": "configs/default.json",
+  "news_input": "data/sample_news_scores.csv",
+  "min_score": 45.0,
+  "items": [
+    {
+      "symbol": "512100",
+      "status": "entry_candidate",
+      "signal_close": 1.28,
+      "total_score": 73.48,
+      "short_term_bias": "rule_constructive",
+      "medium_term_bias": "rule_constructive",
+      "entry_trigger_pct": 0.013219,
+      "entry_price": 1.2969,
+      "pre_entry_invalidation_price": 1.2181,
+      "stop_loss_pct": 0.048375,
+      "stop_loss_price_if_entry_fills": 1.2342,
+      "take_profit_pct": 0.087075,
+      "take_profit_price_if_entry_fills": 1.4098,
+      "trailing_stop_pct": 0.035156,
+      "round_trip_fee_pct": 0.0015,
+      "assumed_order_value": 10000.0,
+      "estimated_round_trip_fee": 15.0,
+      "minimum_order_value_for_30bps_fee_drag": 3333.33,
+      "advantages": [
+        "5-day momentum is positive",
+        "20-day momentum is positive",
+        "latest close is above MA20",
+        "medium trend is not below long trend",
+        "recent volume is above 20-day average",
+        "reviewed recent-news score is positive"
+      ],
+      "risks": [
+        "RSI is high; chasing risk is elevated"
+      ],
+      "news_score": 0.2,
+      "news_summary": "Sample positive broad sector liquidity note",
+      "news_url": ""
+    },
+    {
+      "symbol": "518880",
+      "status": "watch_only",
+      "signal_close": 4.9,
+      "total_score": 70.31,
+      "short_term_bias": "rule_watchlist",
+      "medium_term_bias": "rule_watchlist",
+      "entry_trigger_pct": 0.01,
+      "entry_price": 4.949,
+      "pre_entry_invalidation_price": 4.704,
+      "stop_loss_pct": 0.04,
+      "stop_loss_price_if_entry_fills": 4.751,
+      "take_profit_pct": 0.072,
+      "take_profit_price_if_entry_fills": 5.3053,
+      "trailing_stop_pct": 0.03,
+      "round_trip_fee_pct": 0.0015,
+      "assumed_order_value": 10000.0,
+      "estimated_round_trip_fee": 15.0,
+      "minimum_order_value_for_30bps_fee_drag": 3333.33,
+      "advantages": [
+        "5-day momentum is positive",
+        "20-day momentum is positive",
+        "latest close is above MA20",
+        "medium trend is not below long trend",
+        "recent volume is above 20-day average"
+      ],
+      "risks": [
+        "RSI is high; chasing risk is elevated",
+        "reviewed recent-news score is negative"
+      ],
+      "news_score": -0.1,
+      "news_summary": "Sample mildly negative gold-related macro note",
+      "news_url": ""
+    },
+    {
+      "symbol": "510500",
+      "status": "watch_only",
+      "signal_close": 7.03,
+      "total_score": 63.65,
+      "short_term_bias": "rule_watchlist",
+      "medium_term_bias": "rule_watchlist",
+      "entry_trigger_pct": 0.01,
+      "entry_price": 7.1003,
+      "pre_entry_invalidation_price": 6.7488,
+      "stop_loss_pct": 0.04,
+      "stop_loss_price_if_entry_fills": 6.8163,
+      "take_profit_pct": 0.072,
+      "take_profit_price_if_entry_fills": 7.6115,
+      "trailing_stop_pct": 0.03,
+      "round_trip_fee_pct": 0.0015,
+      "assumed_order_value": 10000.0,
+      "estimated_round_trip_fee": 15.0,
+      "minimum_order_value_for_30bps_fee_drag": 3333.33,
+      "advantages": [
+        "5-day momentum is positive",
+        "20-day momentum is positive",
+        "latest close is above MA20",
+        "medium trend is not below long trend",
+        "recent volume is above 20-day average",
+        "reviewed recent-news score is positive"
+      ],
+      "risks": [
+        "RSI is high; chasing risk is elevated"
+      ],
+      "news_score": 0.05,
+      "news_summary": "Sample neutral small/mid-cap ETF news input",
+      "news_url": ""
+    }
+  ]
+}

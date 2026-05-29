@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "haitong-quant"
+version = "0.1.0"
+description = "Local A-share/ETF quant research, risk, mock execution, and official-broker adapter scaffold."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Private" }
+authors = [{ name = "Local Codex workspace" }]
+dependencies = []
+
+[project.optional-dependencies]
+research = [
+  "akshare>=1.16",
+  "backtrader>=1.9.78.123",
+  "pandas>=2.0",
+  "pyyaml>=6.0",
+]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+haitong-quant = "haitong_quant.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

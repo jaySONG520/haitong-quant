@@ -1,0 +1,5 @@
+﻿symbol,name,asset_type,last_price,pct_change,amount,turnover,market_cap,reason
+300750,宁德时代,stock,424.0,2.1,1800000000.0,1.1,1700000000000.0,amount=1800000000; price=424.00; pct_change=2.10; turnover=1.10
+600036,招商银行,stock,38.01,1.2,1000000000.0,0.5,950000000000.0,amount=1000000000; price=38.01; pct_change=1.20; turnover=0.50
+000858,五粮液,stock,84.89,-3.2,900000000.0,0.7,330000000000.0,amount=900000000; price=84.89; pct_change=-3.20; turnover=0.70
+000001,平安银行,stock,10.93,0.8,700000000.0,0.4,210000000000.0,amount=700000000; price=10.93; pct_change=0.80; turnover=0.40
