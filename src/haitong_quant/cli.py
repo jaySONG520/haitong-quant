@@ -49,6 +49,7 @@ from haitong_quant.ops import (
     monitor_loop,
     render_static_dashboard,
     render_windows_task_xml,
+    serve_dashboard,
     write_static_dashboard,
     write_windows_task_xml,
 )
@@ -310,6 +311,9 @@ def _add_dashboard(sub) -> None:
     parser.add_argument("--trade-plan", default="reports/trade_plan.json")
     parser.add_argument("--daily-report", default="reports/daily_report.md")
     parser.add_argument("--output", default=None)
+    parser.add_argument("--serve", action="store_true")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8765)
 
 
 def _add_screening_args(parser: argparse.ArgumentParser) -> None:
@@ -553,6 +557,14 @@ def _cmd_optimize(config: QuantConfig, args) -> dict:
 
 
 def _cmd_dashboard(config: QuantConfig, args) -> dict:
+    if args.serve:
+        serve_dashboard(
+            trade_plan_path=args.trade_plan,
+            daily_report_path=args.daily_report,
+            host=args.host,
+            port=args.port,
+        )
+        return {"served": True, "url": f"http://{args.host}:{args.port}"}
     output = args.output or config.ops.dashboard_path
     content = render_static_dashboard(
         trade_plan_path=args.trade_plan,

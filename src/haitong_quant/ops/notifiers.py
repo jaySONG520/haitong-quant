@@ -57,6 +57,22 @@ class SMTPNotifier:
             client.send_message(message)
 
 
+@dataclass(frozen=True)
+class ServerChanNotifier:
+    send_key: str
+
+    def send(self, title: str, body: str) -> None:
+        payload = json.dumps({"title": title, "desp": body}).encode("utf-8")
+        req = request.Request(
+            f"https://sctapi.ftqq.com/{self.send_key}.send",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with request.urlopen(req, timeout=10) as response:  # noqa: S310 - fixed Server Chan endpoint
+            response.read()
+
+
 def build_notifier(kind: str) -> Notifier:
     if kind == "webhook":
         url = os.environ.get("HAITONG_QUANT_WEBHOOK_URL", "")
@@ -82,4 +98,9 @@ def build_notifier(kind: str) -> Notifier:
             sender=required["sender"],
             recipient=required["recipient"],
         )
+    if kind == "serverchan":
+        send_key = os.environ.get("HAITONG_QUANT_SERVERCHAN_KEY", "")
+        if not send_key:
+            return ConsoleNotifier()
+        return ServerChanNotifier(send_key)
     return ConsoleNotifier()

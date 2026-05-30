@@ -9,6 +9,7 @@ from haitong_quant.analysis.factors import (
     period_return,
     rsi,
     scale,
+    sentiment_points,
     volume_ratio as factor_volume_ratio,
 )
 from haitong_quant.analysis.news import NewsScore
@@ -107,7 +108,7 @@ class KlineNewsScreener:
         medium_points = scale(ret20, low=-0.08, high=0.20)
         rsi_points = 100.0 if 45.0 <= rsi14 <= 70.0 else 70.0 if 35.0 <= rsi14 <= 80.0 else 30.0
         volume_points = scale(volume_ratio, low=0.6, high=1.8)
-        news_points = (news_score + 1.0) * 50.0
+        news_points = sentiment_points(news)
         total_score = (
             short_points * 0.25
             + medium_points * 0.25

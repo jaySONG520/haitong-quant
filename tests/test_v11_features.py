@@ -17,6 +17,7 @@ from haitong_quant.data import AKShareDataSource, DataCache
 from haitong_quant.logging_config import setup_logging
 from haitong_quant.models import AccountSnapshot, Bar, OrderIntent, Side
 from haitong_quant.ops.monitor import evaluate_trade_plan
+from haitong_quant.ops.notifiers import ConsoleNotifier, build_notifier
 from haitong_quant.ops.scheduler import render_windows_task_xml
 from haitong_quant.risk import PortfolioRiskChecker, PortfolioRiskConfig, RiskEngine, RuntimeRiskConfig
 from haitong_quant.strategy import build_strategy
@@ -46,6 +47,17 @@ class V11FeatureTests(unittest.TestCase):
 
             self.assertEqual(loaded_etf[0].close, 1)
             self.assertEqual(loaded_stock[0].close, 2)
+            cache.close()
+
+    def test_universe_cache_uses_chinese_code_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = DataCache(Path(tmp) / "cache.db")
+            cache.put_universe("stock", [{"代码": "600036", "名称": "招商银行"}], source="akshare")
+            loaded = cache.get_universe("stock", source="akshare")
+
+            self.assertEqual(loaded[0]["代码"], "600036")
+            rows = cache._get_conn().execute("SELECT symbol FROM universe").fetchall()
+            self.assertEqual(rows[0][0], "600036")
             cache.close()
 
     def test_akshare_data_source_uses_fresh_cache(self):
@@ -176,6 +188,7 @@ class V11FeatureTests(unittest.TestCase):
             start_time="2026-05-29T15:15:00",
         )
         self.assertIn("CalendarTrigger", xml)
+        self.assertIsInstance(build_notifier("serverchan"), ConsoleNotifier)
 
         with tempfile.TemporaryDirectory() as tmp:
             plan = Path(tmp) / "plan.json"

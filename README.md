@@ -121,6 +121,13 @@ python -m haitong_quant.cli optimize --config configs/default.json --train-days 
 python -m haitong_quant.cli dashboard --config configs/default.json --trade-plan reports/trade_plan.json
 ```
 
+To run the read-only web dashboard:
+
+```powershell
+python -m pip install -e ".[web]"
+python -m haitong_quant.cli dashboard --config configs/default.json --serve --host 127.0.0.1 --port 8765
+```
+
 The system now has SQLite cache integration for AKShare bars/universe/news,
 portfolio-level risk checks, Pearson correlation checks, drawdown breakers,
 rotating logs, decision JSONL logs, notifier hooks, a strategy factory, and a
