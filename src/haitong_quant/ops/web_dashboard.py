@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from haitong_quant.ops.dashboard import render_static_dashboard
+from haitong_quant.ops.dashboard import build_dashboard_summary, render_static_dashboard
 
 
 def create_flask_app(
@@ -38,6 +38,15 @@ def create_flask_app(
     def daily_report():
         path = Path(daily_report_path)
         return jsonify({"path": str(path), "content": path.read_text(encoding="utf-8-sig") if path.exists() else ""})
+
+    @app.get("/api/dashboard-summary")
+    def dashboard_summary():
+        return jsonify(
+            build_dashboard_summary(
+                trade_plan_path=trade_plan_path,
+                daily_report_path=daily_report_path,
+            )
+        )
 
     return app
 
