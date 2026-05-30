@@ -108,18 +108,38 @@ class AKShareDataSource:
 
         for symbol in symbols:
             if self.cache is not None:
-                grouped[symbol] = self.cache.get_or_fetch_bars(
-                    symbol,
-                    lambda item, ak_module=ak: self._fetch_bars(
-                        ak_module, item, start_text, end_text
-                    ),
-                    start=start,
-                    end=end,
-                    source="akshare",
-                    asset_type=self.asset_type,
-                    adjust=self.adjust,
-                    max_age_days=self.cache_max_age_days,
-                )
+                try:
+                    grouped[symbol] = self.cache.get_or_fetch_bars(
+                        symbol,
+                        lambda item, ak_module=ak: self._fetch_bars(
+                            ak_module, item, start_text, end_text
+                        ),
+                        start=start,
+                        end=end,
+                        source="akshare",
+                        asset_type=self.asset_type,
+                        adjust=self.adjust,
+                        max_age_days=self.cache_max_age_days,
+                    )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "AKShare live fetch failed for %s, trying SQLite cache fallback. Error: %s",
+                        symbol,
+                        exc,
+                    )
+                    cached_bars = self.cache.get_bars(
+                        symbol,
+                        start,
+                        end,
+                        source="akshare",
+                        asset_type=self.asset_type,
+                        adjust=self.adjust,
+                    )
+                    if cached_bars:
+                        grouped[symbol] = cached_bars
+                    else:
+                        LOGGER.error("No SQLite cache available for %s during fallback.", symbol)
+                        raise
             else:
                 grouped[symbol] = self._fetch_bars(ak, symbol, start_text, end_text)
         return grouped

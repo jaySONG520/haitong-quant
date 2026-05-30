@@ -116,6 +116,24 @@ class PortfolioRiskChecker:
             return False, f"{symbol} 权重 {future_weight:.1%} 超过上限 {self.config.max_single_symbol_weight:.1%}"
         return True, "ok"
 
+    def check_candidates_correlation(
+        self,
+        candidates: list[str],
+        correlation_matrix: dict[tuple[str, str], float] | None = None,
+    ) -> list[tuple[str, str, float]]:
+        """检查所有候选标的之间的两两相关性，返回超过上限（默认0.85）的相关性对列表。"""
+        if not correlation_matrix or len(candidates) < 2:
+            return []
+        warnings = []
+        for i in range(len(candidates)):
+            for j in range(i + 1, len(candidates)):
+                a, b = candidates[i], candidates[j]
+                key = (min(a, b), max(a, b))
+                corr = correlation_matrix.get(key, 0.0)
+                if abs(corr) > self.config.max_correlation:
+                    warnings.append((a, b, corr))
+        return warnings
+
     def full_check(
         self,
         symbol: str,

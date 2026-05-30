@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import argparse
 import json
-import sys
+
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from pathlib import Path

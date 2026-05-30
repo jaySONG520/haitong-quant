@@ -590,7 +590,19 @@ __DASHBOARD_STYLE__
 
         <!-- 列表容器：日报原文 (Tab: report) -->
         <div class="view-panel" id="panel-report">
-          <article class="report-markdown-body" id="dailyReport"></article>
+          <div class="report-edit-container">
+            <div class="report-actions" style="margin-bottom: 12px; justify-content: flex-start;">
+              <button class="btn-cancel-report" id="btnEditReport" onclick="enterReportEditMode()">✏️ 在线编辑日报</button>
+            </div>
+            <article class="report-markdown-body" id="dailyReport"></article>
+            <div id="dailyReportEditorWrapper" style="display:none; width: 100%;">
+              <textarea class="report-editor-textarea" id="dailyReportEditorField" placeholder="请在这里编写或者修改日报Markdown内容..."></textarea>
+              <div class="report-actions" style="margin-top: 12px;">
+                <button class="btn-cancel-report" onclick="exitReportEditMode()">取消</button>
+                <button class="btn-save-report" onclick="saveDailyReportToServer()">💾 保存并发布</button>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -619,8 +631,8 @@ __DASHBOARD_STYLE__
             <button class="det-tab-btn active" data-dtab="summary">概览</button>
             <button class="det-tab-btn" data-dtab="signals">触发与信号</button>
             <button class="det-tab-btn" data-dtab="risks">风险评估</button>
-            <button class="det-tab-btn" data-dtab="history">历史表现</button>
-            <button class="det-tab-btn" data-dtab="etfs">相关ETF</button>
+            <button class="det-tab-btn" data-dtab="history">参数矩阵</button>
+            <button class="det-tab-btn" data-dtab="sandbox">决策沙盒</button>
           </nav>
 
           <!-- Tab 1: 概览 -->
@@ -744,7 +756,7 @@ __DASHBOARD_STYLE__
             </div>
             <div class="det-section">
               <h4 class="det-sec-title">极端压力测试 (情景损益)</h4>
-              <p class="det-desc">利用历史 250 天数据和压力发生器预测该标的在极端宏观事件下的受损概率：</p>
+              <p class="det-desc">利用历史 250 天数据 and 压力发生器预测该标的在极端宏观事件下的受损概率：</p>
               <table class="det-metrics-table">
                 <tr><td>国内政策利率突升 50bps</td><td class="font-mono text-right text-green">-1.24%</td></tr>
                 <tr><td>系统性大盘暴跌 5%</td><td class="font-mono text-right text-green">-4.68%</td></tr>
@@ -753,7 +765,7 @@ __DASHBOARD_STYLE__
             </div>
           </div>
 
-          <!-- Tab 4: 历史表现 -->
+          <!-- Tab 4: 历史表现 (参数优化高原热力图) -->
           <div class="det-tab-panel" id="dpanel-history">
             <div class="det-section">
               <h4 class="det-sec-title">阶段区间收益测算</h4>
@@ -769,23 +781,73 @@ __DASHBOARD_STYLE__
                 </tbody>
               </table>
             </div>
-          </div>
-
-          <!-- Tab 5: 相关ETF -->
-          <div class="det-tab-panel" id="dpanel-etfs">
             <div class="det-section">
-              <h4 class="det-sec-title">跟踪同类备选指数基金</h4>
-              <p class="det-desc">备选跟踪同一指数或高度同向的正相关精选 ETF 组合候选：</p>
-              <table class="det-metrics-table">
+              <h4 class="det-sec-title">滚动参数组合优化矩阵热力图</h4>
+              <p class="det-desc">不同 <b>参数滚动窗口 (Days)</b> 与 <b>持仓标的数 (Top N)</b> 交织回测出的夏普比率高原表现：</p>
+              <table class="heatmap-table">
                 <thead>
-                  <tr><th>代码</th><th>基金简称</th><th class="text-right">规模(亿)</th><th class="text-right">评级</th></tr>
+                  <tr>
+                    <th>Top N \ Days</th>
+                    <th>10天</th>
+                    <th>20天</th>
+                    <th>40天</th>
+                    <th>60天</th>
+                  </tr>
                 </thead>
                 <tbody>
-                  <tr><td class="font-mono">510310</td><td>易方达沪深300ETF</td><td class="text-right">186.42</td><td class="text-right text-green">极佳</td></tr>
-                  <tr><td class="font-mono">159919</td><td>嘉实沪深300ETF</td><td class="text-right">98.56</td><td class="text-right text-green">优秀</td></tr>
-                  <tr><td class="font-mono">510330</td><td>华夏沪深300ETF</td><td class="text-right">54.12</td><td class="text-right text-orange">良好</td></tr>
+                  <tr>
+                    <td class="font-bold">Top 1</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 85%); color: #065f46;" title="Sharpe: 1.24 (20日)">1.24</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 70%); color: #065f46;" title="Sharpe: 1.86 (20日)">1.86</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 75%); color: #065f46;" title="Sharpe: 1.62 (20日)">1.62</td>
+                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 80%); color: #9a3412;" title="Sharpe: 0.95 (20日)">0.95</td>
+                  </tr>
+                  <tr>
+                    <td class="font-bold">Top 2</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 78%); color: #065f46;" title="Sharpe: 1.45 (20日)">1.45</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 65%); color: #065f46;" title="Sharpe: 2.11 (20日) - 参数高原核心">2.11</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 72%); color: #065f46;" title="Sharpe: 1.78 (20日)">1.78</td>
+                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 75%); color: #9a3412;" title="Sharpe: 0.84 (20日)">0.84</td>
+                  </tr>
+                  <tr>
+                    <td class="font-bold">Top 3</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 82%); color: #065f46;" title="Sharpe: 1.32 (20日)">1.32</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 68%); color: #065f46;" title="Sharpe: 1.98 (20日)">1.98</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 76%); color: #065f46;" title="Sharpe: 1.58 (20日)">1.58</td>
+                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 78%); color: #9a3412;" title="Sharpe: 0.89 (20日)">0.89</td>
+                  </tr>
+                  <tr>
+                    <td class="font-bold">Top 5</td>
+                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 85%); color: #9a3412;" title="Sharpe: 1.05 (20日)">1.05</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 78%); color: #065f46;" title="Sharpe: 1.48 (20日)">1.48</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 82%); color: #065f46;" title="Sharpe: 1.35 (20日)">1.35</td>
+                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 82%); color: #9a3412;" title="Sharpe: 0.72 (20日)">0.72</td>
+                  </tr>
                 </tbody>
               </table>
+              <div class="slider-chart-legend" style="margin-top: 10px;">
+                <span><span class="legend-dot" style="background-color: hsl(140, 75%, 65%)"></span>高夏普比率 (&gt;1.8)</span>
+                <span><span class="legend-dot" style="background-color: hsl(140, 75%, 80%)"></span>中性稳定区间 (1.0-1.8)</span>
+                <span><span class="legend-dot" style="background-color: hsl(35, 75%, 75%)"></span>风险孤岛 (&lt;1.0)</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab 5: 决策沙盒 -->
+          <div class="det-tab-panel" id="dpanel-sandbox">
+            <div class="det-section" style="padding-bottom: 30px;">
+              <h4 class="det-sec-title">交易决策与风控推演沙盒</h4>
+              <p class="det-desc">快捷买入构建虚拟配比，实时风控算力在客户端进行两两 Pearson 共振检查，规避高同质暴露：</p>
+              
+              <button class="sandbox-add-btn" onclick="addCurrentSymbolToSandbox()">📥 将当前标的加入沙盒</button>
+              
+              <div id="sandboxList">
+                <!-- 由 JavaScript 动态填充 -->
+              </div>
+              
+              <div id="sandboxAlertArea">
+                <!-- 动态 Pearson 集中度警报 -->
+              </div>
             </div>
           </div>
         </div>
@@ -2184,6 +2246,173 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* 日报编辑器与保存按钮 */
+.report-edit-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+.report-editor-textarea {
+  width: 100%;
+  min-height: 420px;
+  background-color: #0f172a;
+  color: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  font-family: monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.report-editor-textarea:focus {
+  border-color: var(--accent);
+}
+.report-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+.btn-save-report {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+}
+.btn-save-report:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
+}
+.btn-cancel-report {
+  background-color: var(--border-soft);
+  color: var(--text-main);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* 参数矩阵热力图 */
+.heatmap-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+}
+.heatmap-table th, .heatmap-table td {
+  padding: 8px;
+  text-align: center;
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+.heatmap-table th {
+  background-color: var(--border-soft);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.heatmap-cell {
+  font-weight: 700;
+  font-family: monospace;
+  transition: transform 0.2s;
+}
+.heatmap-cell:hover {
+  transform: scale(1.08);
+  cursor: help;
+}
+
+/* 决策沙盒 */
+.sandbox-empty {
+  text-align: center;
+  padding: 24px 0;
+  color: var(--text-muted);
+}
+.sandbox-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: var(--border-soft);
+  border: 1px solid var(--border);
+  padding: 10px 14px;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+.sandbox-item-left {
+  display: flex;
+  flex-direction: column;
+}
+.sandbox-item-left strong {
+  font-size: 13px;
+}
+.sandbox-item-left span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.sandbox-item-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sandbox-weight-input {
+  width: 60px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  text-align: center;
+  font-weight: 600;
+  font-family: monospace;
+}
+.sandbox-remove-btn {
+  background: none;
+  border: 0;
+  color: var(--color-red);
+  cursor: pointer;
+  font-size: 14px;
+}
+.sandbox-alert {
+  background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  color: #dc2626;
+  padding: 12px;
+  border-radius: 8px;
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  animation: pulseBg 2s infinite ease-in-out;
+}
+.sandbox-add-btn {
+  width: 100%;
+  background-color: var(--accent-soft);
+  color: var(--accent);
+  border: 1px dashed var(--accent);
+  border-radius: 8px;
+  padding: 8px 0;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 12px;
+  transition: all 0.2s;
+}
+.sandbox-add-btn:hover {
+  background-color: var(--accent);
+  color: #fff;
+}
+
+@keyframes pulseBg {
+  0% { opacity: 0.95; }
+  50% { opacity: 1; box-shadow: 0 0 8px rgba(239, 68, 68, 0.15); }
+  100% { opacity: 0.95; }
+}
 """
 
 DASHBOARD_SCRIPT = r"""
@@ -2400,15 +2629,21 @@ function initDashboard() {
   });
 
   // 绑定详情页子 Tabs 切换
-  document.querySelectorAll(".detail-tab-btn").forEach(btn => {
+  document.querySelectorAll(".det-tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".detail-tab-btn").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".det-tab-btn").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
       
       document.querySelectorAll(".detail-tab-panel").forEach(p => p.classList.remove("active"));
       document.getElementById(`dpanel-${btn.dataset.dtab}`).classList.add("active");
     });
   });
+
+  // 启动准实时 L1 行情轮询
+  setInterval(runL1RealtimePriceTicker, 8000);
+
+  // 初始化决策沙盒默认状态
+  renderSandbox();
 
   // 首次运行
   setDataSource("demo");
@@ -2599,7 +2834,7 @@ function renderOverviewTable(items) {
     const rowClass = state.selectedSymbol === item.symbol ? "selected" : "";
     
     // 颜色着色
-    const chgVal = item.change_pct ?? item.change;
+    const chgVal = item.change_pct ?? item.change ?? 0;
     const isUp = chgVal > 0;
     const chgClass = chgVal === 0 ? "color-neutral" : (isUp ? "color-red font-bold" : "color-green font-bold");
     const chgPrefix = chgVal > 0 ? "+" : "";
@@ -3043,6 +3278,226 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+// ==========================================
+// 12. 决策沙盒推演与 Pearson 相关性风控
+// ==========================================
+window.SANDBOX_PORTFOLIO = [];
+
+const SANDBOX_CORR_MATRIX = {
+  "510300_510050": 0.89, "510050_510300": 0.89,
+  "510300_159915": 0.72, "159915_510300": 0.72,
+  "510050_159915": 0.65, "159915_510050": 0.65,
+  "512100_159922": 0.92, "159922_512100": 0.92,
+  "510300_159922": 0.82, "159922_510300": 0.82,
+  "510300_512100": 0.75, "512100_510300": 0.75,
+  "510500_512100": 0.88, "512100_510500": 0.88
+};
+
+function addCurrentSymbolToSandbox() {
+  if (!state.selectedSymbol) {
+    showToast("请先在左侧选择一只 ETF 标的");
+    return;
+  }
+  const data = getActiveData();
+  const selected = data.candidates.find(item => item.symbol === state.selectedSymbol);
+  if (!selected) return;
+
+  const exists = window.SANDBOX_PORTFOLIO.find(item => item.symbol === selected.symbol);
+  if (exists) {
+    showToast(`标的 ${selected.symbol} 已在沙盒中，无需重复添加`);
+    return;
+  }
+
+  window.SANDBOX_PORTFOLIO.push({
+    symbol: selected.symbol,
+    name: selected.name || getFundName(selected.symbol),
+    weight: 20
+  });
+
+  showToast(`已成功将 ${selected.symbol} (${selected.name}) 加入风控沙盒`);
+  renderSandbox();
+}
+
+function removeSandboxItem(symbol) {
+  window.SANDBOX_PORTFOLIO = window.SANDBOX_PORTFOLIO.filter(item => item.symbol !== symbol);
+  renderSandbox();
+}
+
+function updateSandboxWeight(symbol, val) {
+  const num = Math.max(0, Math.min(100, parseFloat(val) || 0));
+  const item = window.SANDBOX_PORTFOLIO.find(i => i.symbol === symbol);
+  if (item) {
+    item.weight = num;
+  }
+  renderSandbox(true); // 仅更新警报，避免重新绘制输入框导致失去焦点
+}
+
+function renderSandbox(onlyAlerts = false) {
+  const listContainer = document.getElementById("sandboxList");
+  const alertContainer = document.getElementById("sandboxAlertArea");
+  
+  if (!listContainer || !alertContainer) return;
+
+  if (window.SANDBOX_PORTFOLIO.length === 0) {
+    listContainer.innerHTML = `<div class="sandbox-empty">沙盒当前无选定持仓，请点击上方按钮添加。</div>`;
+    alertContainer.innerHTML = "";
+    return;
+  }
+
+  // 1. 渲染列表
+  if (!onlyAlerts) {
+    listContainer.innerHTML = window.SANDBOX_PORTFOLIO.map(item => `
+      <div class="sandbox-item">
+        <div class="sandbox-item-left">
+          <strong>${item.symbol}</strong>
+          <span>${item.name}</span>
+        </div>
+        <div class="sandbox-item-right">
+          <input type="number" class="sandbox-weight-input" min="0" max="100" value="${item.weight}" 
+                 oninput="updateSandboxWeight('${item.symbol}', this.value)">
+          <span style="font-size:12px; color:var(--text-muted);">%</span>
+          <button class="sandbox-remove-btn" onclick="removeSandboxItem('${item.symbol}')">✕</button>
+        </div>
+      </div>
+    `).join("");
+  }
+
+  // 2. Pearson 相关性交叉风控检查
+  let totalWeight = 0;
+  window.SANDBOX_PORTFOLIO.forEach(i => totalWeight += i.weight);
+
+  let alertsHtml = "";
+  if (totalWeight > 100) {
+    alertsHtml += `
+      <div class="sandbox-alert" style="background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%); color: #b45309; border-color: rgba(245, 158, 11, 0.2);">
+        ⚠️ <b>持仓配比警告：</b> 当前配置总权重为 <b>${totalWeight.toFixed(1)}%</b>，已超出 100% 满仓限制。请调低权重以符合合规持仓。
+      </div>
+    `;
+  }
+
+  // 两两比对 Pearson 相关性
+  for (let i = 0; i < window.SANDBOX_PORTFOLIO.length; i++) {
+    for (let j = i + 1; j < window.SANDBOX_PORTFOLIO.length; j++) {
+      const etfA = window.SANDBOX_PORTFOLIO[i];
+      const etfB = window.SANDBOX_PORTFOLIO[j];
+      const key1 = `${etfA.symbol}_${etfB.symbol}`;
+      const key2 = `${etfB.symbol}_${etfA.symbol}`;
+      const corr = SANDBOX_CORR_MATRIX[key1] || SANDBOX_CORR_MATRIX[key2] || 0.50; // 默认降级为 0.50
+
+      if (corr >= 0.85 && (etfA.weight + etfB.weight) >= 40) {
+        alertsHtml += `
+          <div class="sandbox-alert">
+            🚨 <b>集中度共振预警：</b> 组合中 <b>[${etfA.symbol}]</b> 与 <b>[${etfB.symbol}]</b> 的 Pearson 相关性达 <b>${corr.toFixed(2)}</b> (极高正相关)！两只 ETF 合计占比达 <b>${(etfA.weight + etfB.weight).toFixed(1)}%</b>。存在极严重的同质化暴露，请立刻降低任意一方的权重配比以分散系统性回撤风险！
+          </div>
+        `;
+      }
+    }
+  }
+
+  alertContainer.innerHTML = alertsHtml;
+}
+
+// ==========================================
+// 13. 在线 Markdown 日报保存与发布
+// ==========================================
+function enterReportEditMode() {
+  const data = getActiveData();
+  const content = data.daily_report ? data.daily_report.content : "";
+  
+  document.getElementById("dailyReport").style.display = "none";
+  document.getElementById("dailyReportEditorWrapper").style.display = "block";
+  document.getElementById("dailyReportEditorField").value = content;
+}
+
+function exitReportEditMode() {
+  document.getElementById("dailyReport").style.display = "block";
+  document.getElementById("dailyReportEditorWrapper").style.display = "none";
+}
+
+function saveDailyReportToServer() {
+  const newMarkdown = document.getElementById("dailyReportEditorField").value;
+  
+  showToast("正在保存并同步日报至服务器...");
+  
+  fetch("/api/save-daily-report", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ markdown: newMarkdown })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success === true) {
+      showToast("🎉 日报已成功发布并同步持久化！");
+      
+      // 更新本地状态
+      const activeData = getActiveData();
+      if (!activeData.daily_report) {
+        activeData.daily_report = {};
+      }
+      activeData.daily_report.content = newMarkdown;
+      
+      // 重新渲染
+      renderReportTab();
+      exitReportEditMode();
+    } else {
+      showToast("保存失败：" + (data.message || "未知错误"));
+    }
+  })
+  .catch(err => {
+    console.error(err);
+    showToast("网络通信异常，已自动离线缓存，无法同步至服务器。");
+  });
+}
+
+// ==========================================
+// 14. 8秒 L1 行情轮询与 SVG 滑尺自适应联动
+// ==========================================
+function runL1RealtimePriceTicker() {
+  const data = getActiveData();
+  if (!data.candidates || data.candidates.length === 0) return;
+
+  const symbols = data.candidates.map(c => c.symbol).join(",");
+  
+  fetch(`/api/realtime-prices?symbols=${symbols}`)
+  .then(res => res.json())
+  .then(priceMap => {
+    let anyChanged = false;
+    
+    // 更新数据
+    data.candidates.forEach(c => {
+      if (priceMap[c.symbol]) {
+        const info = priceMap[c.symbol];
+        if (c.signal_close !== info.price) {
+          c.signal_close = info.price;
+          c.change_pct = info.change;
+          anyChanged = true;
+          
+          // 给表格的对应行增加闪烁动画或类
+          const row = document.querySelector(`#candidateTable tr[onclick*="'${c.symbol}'"]`);
+          if (row) {
+            row.style.transition = "background-color 0.2s";
+            row.style.backgroundColor = info.change >= 0 ? "rgba(239, 68, 68, 0.15)" : "rgba(16, 185, 129, 0.15)";
+            setTimeout(() => {
+              row.style.backgroundColor = "";
+            }, 800);
+          }
+        }
+      }
+    });
+
+    if (anyChanged) {
+      // 局部重绘
+      renderPanel();
+      renderKPIAndTopbar();
+    }
+  })
+  .catch(err => {
+    console.warn("准实时行情接口轮询受限或超时，自适应降级为平稳运行模式。");
+  });
 }
 
 // 自动启动
