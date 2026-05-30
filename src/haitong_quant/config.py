@@ -87,6 +87,8 @@ class OpsConfig:
     pipeline_output_dir: str = "runs"
     alerts_path: str = "reports/monitor_alerts.jsonl"
     dashboard_path: str = "reports/dashboard.html"
+    dashboard_poll_interval_seconds: int = 30
+    dashboard_min_poll_interval_seconds: int = 5
 
 
 @dataclass(frozen=True)

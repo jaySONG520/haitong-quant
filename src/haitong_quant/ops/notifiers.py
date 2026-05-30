@@ -74,12 +74,18 @@ class ServerChanNotifier:
 
 
 def build_notifier(kind: str) -> Notifier:
-    if kind == "webhook":
+    normalized = (kind or "console").strip().lower()
+    if normalized in {"wechat", "wecom"}:
+        url = os.environ.get("HAITONG_QUANT_WECHAT_WEBHOOK_URL", "")
+        if not url:
+            return ConsoleNotifier()
+        return WebhookNotifier(url)
+    if normalized == "webhook":
         url = os.environ.get("HAITONG_QUANT_WEBHOOK_URL", "")
         if not url:
             return ConsoleNotifier()
         return WebhookNotifier(url)
-    if kind == "smtp":
+    if normalized == "smtp":
         required = {
             "host": os.environ.get("HAITONG_QUANT_SMTP_HOST", ""),
             "port": os.environ.get("HAITONG_QUANT_SMTP_PORT", "465"),
@@ -98,7 +104,7 @@ def build_notifier(kind: str) -> Notifier:
             sender=required["sender"],
             recipient=required["recipient"],
         )
-    if kind == "serverchan":
+    if normalized == "serverchan":
         send_key = os.environ.get("HAITONG_QUANT_SERVERCHAN_KEY", "")
         if not send_key:
             return ConsoleNotifier()

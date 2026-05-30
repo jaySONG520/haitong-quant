@@ -60,6 +60,14 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("日报原文", html)
             self.assertIn("搜索代码或名称", html)
             self.assertIn("刷新", html)
+            self.assertIn("自动刷新", html)
+            self.assertIn("轮询间隔", html)
+            self.assertIn("最后刷新", html)
+            self.assertIn("下次刷新", html)
+            self.assertIn("价格执行计划", html)
+            self.assertIn("计划买入价", html)
+            self.assertIn("止盈卖出价", html)
+            self.assertIn("止损离场价", html)
             self.assertIn("可入场候选", html)
             self.assertIn("RSI偏高，追价风险抬升", html)
             self.assertNotIn("Haitong Quant Dashboard", html)
@@ -71,10 +79,15 @@ class DashboardTests(unittest.TestCase):
             summary = build_dashboard_summary(
                 trade_plan_path=Path(tmp) / "missing_plan.json",
                 daily_report_path=Path(tmp) / "missing_report.md",
+                dashboard_poll_interval_seconds=12,
+                dashboard_min_poll_interval_seconds=5,
             )
 
             self.assertEqual(summary["metrics"]["candidate_count"], 0)
             self.assertEqual(summary["daily_report"]["content"], "")
+            self.assertEqual(summary["polling"]["default_interval_seconds"], 12)
+            self.assertEqual(summary["polling"]["min_interval_seconds"], 5)
+            self.assertIn("refreshed_at", summary)
             self.assertIn("未找到交易计划文件", " ".join(summary["warnings"]))
             self.assertIn("未找到研究日报文件", " ".join(summary["warnings"]))
 
@@ -113,6 +126,8 @@ class DashboardTests(unittest.TestCase):
             app = create_flask_app(
                 trade_plan_path=trade_plan,
                 daily_report_path=daily_report,
+                dashboard_poll_interval_seconds=18,
+                dashboard_min_poll_interval_seconds=6,
             )
 
             client = app.test_client()
@@ -122,7 +137,33 @@ class DashboardTests(unittest.TestCase):
 
             self.assertEqual(payload["metrics"]["candidate_count"], 1)
             self.assertEqual(payload["candidates"][0]["status_label"], "观察")
+            self.assertEqual(payload["candidates"][0]["entry_price"], 7.1)
+            self.assertEqual(payload["candidates"][0]["stop_loss_price"], 6.8)
+            self.assertEqual(payload["candidates"][0]["take_profit_price"], 7.6)
+            self.assertEqual(payload["polling"]["default_interval_seconds"], 18)
+            self.assertEqual(payload["polling"]["min_interval_seconds"], 6)
             self.assertIn("研究日报", payload["daily_report"]["content"])
+
+    def test_save_daily_report_accepts_markdown_field(self):
+        try:
+            import flask  # noqa: F401
+        except ImportError:
+            self.skipTest("Flask is not installed")
+
+        from haitong_quant.ops.web_dashboard import create_flask_app
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trade_plan = Path(tmp) / "trade_plan.json"
+            daily_report = Path(tmp) / "daily_report.md"
+            trade_plan.write_text(json.dumps({"items": []}), encoding="utf-8")
+            app = create_flask_app(trade_plan_path=trade_plan, daily_report_path=daily_report)
+
+            client = app.test_client()
+            response = client.post("/api/save-daily-report", json={"markdown": "# 新日报\n\n已保存"})
+
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.get_json()["success"])
+            self.assertIn("新日报", daily_report.read_text(encoding="utf-8-sig"))
 
 
 if __name__ == "__main__":

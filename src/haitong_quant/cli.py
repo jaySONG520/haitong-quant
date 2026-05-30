@@ -79,6 +79,7 @@ def main() -> None:
     _add_paper(sub)
     _add_pipeline(sub)
     _add_monitor(sub)
+    _add_notify_test(sub)
     _add_schedule(sub)
     _add_optimize(sub)
     _add_dashboard(sub)
@@ -169,6 +170,8 @@ def main() -> None:
         print(_to_json(_cmd_pipeline(config, args)))
     elif args.command == "monitor":
         print(_to_json(_cmd_monitor(config, args)))
+    elif args.command == "notify-test":
+        print(_to_json(_cmd_notify_test(config, args)))
     elif args.command == "optimize":
         print(_to_json(_cmd_optimize(config, args)))
     elif args.command == "dashboard":
@@ -287,6 +290,15 @@ def _add_monitor(sub) -> None:
     parser.add_argument("--alerts", default=None)
     parser.add_argument("--interval-seconds", type=float, default=60.0)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--notifier", choices=["console", "webhook", "wechat", "wecom", "smtp", "serverchan"], default=None)
+
+
+def _add_notify_test(sub) -> None:
+    parser = sub.add_parser("notify-test", help="Send a safe notifier test message")
+    parser.add_argument("--config", default="configs/default.json")
+    parser.add_argument("--notifier", choices=["console", "webhook", "wechat", "wecom", "smtp", "serverchan"], default=None)
+    parser.add_argument("--title", default="海通量化提醒测试")
+    parser.add_argument("--body", default="这是一条通知通道测试消息，不涉及交易。")
 
 
 def _add_schedule(sub) -> None:
@@ -493,6 +505,8 @@ def _cmd_pipeline(config: QuantConfig, args) -> dict:
             trade_plan_path=plan_path,
             daily_report_path=daily_path,
             paper_report=paper_payload,
+            dashboard_poll_interval_seconds=config.ops.dashboard_poll_interval_seconds,
+            dashboard_min_poll_interval_seconds=config.ops.dashboard_min_poll_interval_seconds,
         ),
     )
     manifest = {
@@ -511,7 +525,8 @@ def _cmd_pipeline(config: QuantConfig, args) -> dict:
 
 def _cmd_monitor(config: QuantConfig, args) -> dict:
     alerts_path = args.alerts or config.ops.alerts_path
-    notifier = build_notifier(config.ops.notifier.type)
+    notifier_kind = args.notifier or config.ops.notifier.type
+    notifier = build_notifier(notifier_kind)
 
     def load_prices() -> dict[str, float]:
         return latest_close_prices(_load_bars(config, args.prices))
@@ -524,7 +539,21 @@ def _cmd_monitor(config: QuantConfig, args) -> dict:
         interval_seconds=args.interval_seconds,
         once=args.once,
     )
-    return {"alerts": [asdict(alert) for alert in alerts], "alerts_path": alerts_path}
+    return {
+        "alerts": [asdict(alert) for alert in alerts],
+        "alerts_path": alerts_path,
+        "notifier": notifier_kind,
+    }
+
+
+def _cmd_notify_test(config: QuantConfig, args) -> dict:
+    notifier_kind = args.notifier or config.ops.notifier.type
+    notifier = build_notifier(notifier_kind)
+    try:
+        notifier.send(args.title, args.body)
+    except Exception as exc:
+        return {"notifier": notifier_kind, "sent": False, "error": str(exc)}
+    return {"notifier": notifier_kind, "sent": True}
 
 
 def _cmd_schedule(args) -> None:
@@ -576,12 +605,16 @@ def _cmd_dashboard(config: QuantConfig, args) -> dict:
             daily_report_path=args.daily_report,
             host=args.host,
             port=args.port,
+            dashboard_poll_interval_seconds=config.ops.dashboard_poll_interval_seconds,
+            dashboard_min_poll_interval_seconds=config.ops.dashboard_min_poll_interval_seconds,
         )
         return {"served": True, "url": f"http://{args.host}:{args.port}"}
     output = args.output or config.ops.dashboard_path
     content = render_static_dashboard(
         trade_plan_path=args.trade_plan,
         daily_report_path=args.daily_report,
+        dashboard_poll_interval_seconds=config.ops.dashboard_poll_interval_seconds,
+        dashboard_min_poll_interval_seconds=config.ops.dashboard_min_poll_interval_seconds,
     )
     write_static_dashboard(output, content)
     return {"output": output}

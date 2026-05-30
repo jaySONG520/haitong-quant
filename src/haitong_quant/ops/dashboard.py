@@ -55,11 +55,15 @@ def render_static_dashboard(
     trade_plan_path: str | Path = "reports/trade_plan.json",
     daily_report_path: str | Path = "reports/daily_report.md",
     paper_report: dict | None = None,
+    dashboard_poll_interval_seconds: int = 30,
+    dashboard_min_poll_interval_seconds: int = 5,
 ) -> str:
     summary = build_dashboard_summary(
         trade_plan_path=trade_plan_path,
         daily_report_path=daily_report_path,
         paper_report=paper_report,
+        dashboard_poll_interval_seconds=dashboard_poll_interval_seconds,
+        dashboard_min_poll_interval_seconds=dashboard_min_poll_interval_seconds,
     )
     data_json = _json_for_script(summary)
     return (
@@ -74,6 +78,8 @@ def build_dashboard_summary(
     trade_plan_path: str | Path = "reports/trade_plan.json",
     daily_report_path: str | Path = "reports/daily_report.md",
     paper_report: dict | None = None,
+    dashboard_poll_interval_seconds: int = 30,
+    dashboard_min_poll_interval_seconds: int = 5,
 ) -> dict[str, Any]:
     trade_path = Path(trade_plan_path)
     daily_path = Path(daily_report_path)
@@ -92,9 +98,18 @@ def build_dashboard_summary(
         warnings.append("当前没有可展示的候选标的。")
 
     generated_at = str(payload.get("generated_at") or _mtime_iso(trade_path) or "")
+    min_interval = max(1, int(dashboard_min_poll_interval_seconds or 5))
+    default_interval = max(min_interval, int(dashboard_poll_interval_seconds or 30))
+    refreshed_at = datetime.now().isoformat(timespec="seconds")
     return {
         "generated_at": generated_at,
         "generated_at_label": _format_datetime(generated_at) if generated_at else "暂无数据时间",
+        "refreshed_at": refreshed_at,
+        "refreshed_at_label": _format_datetime(refreshed_at),
+        "polling": {
+            "default_interval_seconds": default_interval,
+            "min_interval_seconds": min_interval,
+        },
         "mode_label": "只读研究模式" if payload.get("research_only", True) else "未确认模式",
         "source_paths": {
             "trade_plan": str(trade_path),
@@ -404,7 +419,11 @@ __DASHBOARD_STYLE__
   <div class="main-wrapper">
     <!-- 顶部指数与元信息栏 -->
     <header class="topbar">
-      <div class="index-ticker">
+      <div style="display: flex; align-items: center; gap: 16px;">
+        <button class="sidebar-toggle-btn" id="sidebarToggle" title="收起/展开导航栏">
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <div class="index-ticker">
         <div class="index-card">
           <span class="idx-name">沪深300</span>
           <span class="idx-val down">3,643.21</span>
@@ -424,7 +443,7 @@ __DASHBOARD_STYLE__
           <span class="idx-name">A股成交额</span>
           <span class="idx-val bold">8,742亿</span>
         </div>
-      </div>
+      </div></div>
       
       <div class="top-meta">
         <div class="mode-switch-group">
@@ -530,6 +549,22 @@ __DASHBOARD_STYLE__
               <svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
               <span>刷新</span>
             </button>
+            <div class="polling-controls" aria-label="自动刷新设置">
+              <label class="poll-switch">
+                <input type="checkbox" id="autoRefreshToggle">
+                <span class="poll-slider"></span>
+                <span>自动刷新</span>
+              </label>
+              <label class="poll-interval">
+                <span>轮询间隔</span>
+                <input type="number" id="pollIntervalInput" min="5" step="5" inputmode="numeric">
+                <span>秒</span>
+              </label>
+              <div class="poll-status" aria-live="polite">
+                <span id="lastRefreshText">最后刷新：尚未刷新</span>
+                <span id="nextRefreshText">下次刷新：未开启</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -683,6 +718,31 @@ __DASHBOARD_STYLE__
                 <span><span class="legend-dot bg-gray"></span>安全区间</span>
                 <span><span class="legend-dot bg-green"></span>触发区间</span>
                 <span><span class="legend-dot bg-blue"></span>当前价</span>
+              </div>
+            </div>
+
+            <!-- 价格执行计划 -->
+            <div class="det-section">
+              <div class="det-sec-header">
+                <h4 class="det-sec-title">价格执行计划</h4>
+                <span class="det-sec-meta">只读研究价位</span>
+              </div>
+              <div class="execution-plan-grid">
+                <div class="execution-plan-card plan-buy">
+                  <span>计划买入价</span>
+                  <strong id="detPlanBuy">0.000</strong>
+                  <small id="detPlanBuyNote">价格上破后才进入候选</small>
+                </div>
+                <div class="execution-plan-card plan-profit">
+                  <span>止盈卖出价</span>
+                  <strong id="detPlanTakeProfit">0.000</strong>
+                  <small id="detPlanProfitNote">触及后复核减仓或退出</small>
+                </div>
+                <div class="execution-plan-card plan-stop">
+                  <span>止损离场价</span>
+                  <strong id="detPlanStopLoss">0.000</strong>
+                  <small id="detPlanStopNote">跌破后按风控复核</small>
+                </div>
               </div>
             </div>
 
@@ -925,6 +985,11 @@ body {
   display: grid;
   grid-template-columns: 240px 1fr;
   min-height: 100vh;
+  transition: grid-template-columns 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.app-shell.sidebar-collapsed {
+  grid-template-columns: 0px 1fr;
 }
 
 /* 侧边栏样式 */
@@ -939,6 +1004,15 @@ body {
   top: 0;
   height: 100vh;
   z-index: 10;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.app-shell.sidebar-collapsed .sidebar {
+  width: 0;
+  padding: 24px 0;
+  opacity: 0;
+  border-right: none;
 }
 
 .sidebar-brand {
@@ -1044,33 +1118,81 @@ body {
   gap: 24px;
 }
 
+/* 侧边栏收缩触发按钮 */
+.sidebar-toggle-btn {
+  background: var(--border-soft);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.sidebar-toggle-btn:hover {
+  background: var(--surface-hover);
+  color: var(--accent);
+  transform: scale(1.05);
+}
+
 /* 顶部状态与指数栏 */
 .topbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 24px;
+  gap: 16px;
   background-color: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 16px 24px;
+  padding: 12px 20px;
   box-shadow: var(--shadow-sm);
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 
 .index-ticker {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 12px;
+  flex-wrap: nowrap;
 }
 
 .index-card {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  padding: 4px 8px;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 6px;
   border-radius: 6px;
   transition: background-color 0.2s;
+  white-space: nowrap;
+}
+
+/* 窄屏下自动响应式精简，确保永不换行，保持一整行高保真美感 */
+@media (max-width: 1480px) {
+  .index-ticker .index-card:nth-child(3) {
+    display: none !important;
+  }
+}
+
+@media (max-width: 1360px) {
+  .index-ticker .index-card:nth-child(4) {
+    display: none !important;
+  }
+  .top-meta .weather-meta {
+    display: none !important;
+  }
+}
+
+@media (max-width: 1200px) {
+  .index-ticker .index-card:nth-child(2) {
+    display: none !important;
+  }
 }
 
 .idx-name {
@@ -1381,6 +1503,8 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .search-box-wrap {
@@ -1438,12 +1562,115 @@ body {
   background-color: var(--border-soft);
 }
 
+.btn-refresh.is-refreshing {
+  color: var(--accent);
+  border-color: rgba(37, 99, 235, 0.35);
+  background-color: rgba(37, 99, 235, 0.08);
+  cursor: wait;
+}
+
+.btn-refresh.is-refreshing svg {
+  animation: spinRefresh 0.9s linear infinite;
+}
+
 .btn-refresh svg {
   width: 14px;
   height: 14px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2.5;
+}
+
+.polling-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background-color: var(--surface);
+  color: var(--text-muted);
+  min-height: 38px;
+}
+
+.poll-switch,
+.poll-interval {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.poll-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.poll-slider {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  border-radius: 999px;
+  background-color: var(--border);
+  transition: background-color 0.2s ease;
+}
+
+.poll-slider::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 2px;
+  top: 2px;
+  border-radius: 50%;
+  background-color: #fff;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.2s ease;
+}
+
+.poll-switch input:checked + .poll-slider {
+  background-color: var(--accent);
+}
+
+.poll-switch input:checked + .poll-slider::after {
+  transform: translateX(14px);
+}
+
+.poll-interval input {
+  width: 58px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-align: center;
+  color: var(--text-main);
+  background-color: var(--bg-main);
+  font-weight: 700;
+}
+
+.poll-interval input:focus {
+  outline: 2px solid rgba(37, 99, 235, 0.18);
+  border-color: var(--accent);
+}
+
+.poll-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 156px;
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--text-muted);
+}
+
+.poll-status.is-error {
+  color: var(--danger);
+}
+
+@keyframes spinRefresh {
+  to { transform: rotate(360deg); }
 }
 
 /* 列表展现层 */
@@ -1882,6 +2109,58 @@ body {
 .legend-dot.bg-green { background-color: #10b981; }
 .legend-dot.bg-blue { background-color: #3b82f6; }
 
+.execution-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.execution-plan-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background-color: var(--bg-main);
+  min-width: 0;
+}
+
+.execution-plan-card span,
+.execution-plan-card small {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.execution-plan-card strong {
+  display: block;
+  margin: 4px 0;
+  font-family: monospace;
+  font-size: 18px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.plan-buy {
+  border-color: rgba(37, 99, 235, 0.20);
+  background-color: rgba(37, 99, 235, 0.06);
+}
+
+.plan-buy strong { color: var(--accent); }
+
+.plan-profit {
+  border-color: rgba(239, 68, 68, 0.20);
+  background-color: var(--color-red-soft);
+}
+
+.plan-profit strong { color: var(--color-red); }
+
+.plan-stop {
+  border-color: rgba(245, 158, 11, 0.24);
+  background-color: var(--color-orange-soft);
+}
+
+.plan-stop strong { color: var(--color-orange); }
+
 /* 信号列表 */
 .det-signals-group {
   display: flex;
@@ -2228,6 +2507,19 @@ body {
 }
 
 @media (max-width: 768px) {
+  .table-toolbar,
+  .toolbar-right,
+  .polling-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .search-box-wrap,
+  .polling-controls {
+    width: 100%;
+  }
+  .poll-status {
+    min-width: 0;
+  }
   .kpi-grid {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -2243,6 +2535,9 @@ body {
     justify-content: space-between;
   }
   .trigger-card-grid, .risk-card-grid {
+    grid-template-columns: 1fr;
+  }
+  .execution-plan-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -2417,7 +2712,7 @@ body {
 
 DASHBOARD_SCRIPT = r"""
 // 1. 高保真 Demo 模拟数据集 (完美复刻 68 条标的)
-const REAL_DATA = JSON.parse(document.getElementById("dashboard-data").textContent);
+let REAL_DATA = JSON.parse(document.getElementById("dashboard-data").textContent);
 let DEMO_DATA = {
   generated_at: "2025-05-20T15:00:00",
   generated_at_label: "2025-05-20 15:00:00",
@@ -2541,7 +2836,18 @@ const state = {
   
   // 分页数据
   currentPage: 1,
-  pageSize: 10
+  pageSize: 10,
+
+  // 自动刷新状态
+  autoRefreshEnabled: false,
+  pollIntervalSeconds: Number((REAL_DATA.polling && REAL_DATA.polling.default_interval_seconds) || 30),
+  minPollIntervalSeconds: Number((REAL_DATA.polling && REAL_DATA.polling.min_interval_seconds) || 5),
+  pollTimerId: null,
+  countdownTimerId: null,
+  nextRefreshAt: null,
+  lastRefreshAt: REAL_DATA.refreshed_at_label || "尚未刷新",
+  refreshError: "",
+  isRefreshing: false
 };
 
 // 3. 全局获取当前活动的数据集
@@ -2580,8 +2886,44 @@ function formatPercent(value) {
   return `${num.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
+function getPlanBuyPrice(item) {
+  return Number(item.entry_price || item.signal_close || 0);
+}
+
+function getPlanTakeProfitPrice(item) {
+  return Number(item.take_profit_price || item.take_profit || item.take_profit_price_if_entry_fills || 0);
+}
+
+function getPlanStopLossPrice(item) {
+  return Number(item.stop_loss_price || item.stop_price || item.stop_loss_price_if_entry_fills || 0);
+}
+
+function getPlanInvalidationPrice(item) {
+  return Number(item.pre_entry_invalidation_price || item.invalid_price || 0);
+}
+
 // 4. UI 绘制核心逻辑
 function initDashboard() {
+  if (window.__haitongDashboardInitialized) return;
+  window.__haitongDashboardInitialized = true;
+
+  // 侧边栏折叠控制
+  const sidebarBtn = document.getElementById("sidebarToggle");
+  const appShell = document.querySelector(".app-shell");
+  
+  if (localStorage.getItem("haitong-sidebar-collapsed") === "true") {
+    if (appShell) appShell.classList.add("sidebar-collapsed");
+  }
+  
+  if (sidebarBtn && appShell) {
+    sidebarBtn.addEventListener("click", () => {
+      appShell.classList.toggle("sidebar-collapsed");
+      const isCollapsed = appShell.classList.contains("sidebar-collapsed");
+      localStorage.setItem("haitong-sidebar-collapsed", isCollapsed);
+      showToast(isCollapsed ? "📥 导航栏已收起，开启宽屏决策模式" : "📤 导航栏已展开");
+    });
+  }
+
   // 绑定菜单 Tab 切换事件
   document.querySelectorAll(".sidebar-nav .nav-item").forEach(el => {
     if (el.classList.contains("lock-item")) {
@@ -2623,10 +2965,10 @@ function initDashboard() {
 
   // 绑定刷新按钮
   document.getElementById("refreshButton").addEventListener("click", () => {
-    showToast("数据已极速更新并重新计价。");
-    renderKPIAndTopbar();
-    renderPanel();
+    refreshDashboardData("manual");
   });
+
+  initPollingControls();
 
   // 绑定详情页子 Tabs 切换
   document.querySelectorAll(".det-tab-btn").forEach(btn => {
@@ -2640,13 +2982,13 @@ function initDashboard() {
   });
 
   // 启动准实时 L1 行情轮询
-  setInterval(runL1RealtimePriceTicker, 8000);
-
   // 初始化决策沙盒默认状态
   renderSandbox();
 
   // 首次运行
-  setDataSource("demo");
+  const preferredMode = (REAL_DATA.candidates && REAL_DATA.candidates.length > 0) ? "real" : "demo";
+  setDataSource(preferredMode);
+  runL1RealtimePriceTicker();
 }
 
 // 切换数据源
@@ -2930,23 +3272,29 @@ function renderTriggersTab(items) {
     return;
   }
   
-  container.innerHTML = items.map(item => `
-    <article class="card-item">
-      <div class="card-item-header">
-        <div class="card-item-title">
-          <strong>${escapeHtml(item.symbol)}</strong>
-          <span>${escapeHtml(item.name || getFundName(item.symbol))}</span>
+  container.innerHTML = items.map(item => {
+    const buyPrice = getPlanBuyPrice(item);
+    const takeProfitPrice = getPlanTakeProfitPrice(item);
+    const stopLossPrice = getPlanStopLossPrice(item);
+    const invalidPrice = getPlanInvalidationPrice(item);
+    return `
+      <article class="card-item">
+        <div class="card-item-header">
+          <div class="card-item-title">
+            <strong>${escapeHtml(item.symbol)}</strong>
+            <span>${escapeHtml(item.name || getFundName(item.symbol))}</span>
+          </div>
+          <span class="badge ${getStatusBadgeClass(item.status)}">${escapeHtml(item.status_label || getStatusLabel(item.status))}</span>
         </div>
-        <span class="badge ${getStatusBadgeClass(item.status)}">${escapeHtml(item.status_label || getStatusLabel(item.status))}</span>
-      </div>
-      <div class="card-item-metrics">
-        <div class="card-metric"><span>信号收盘</span><strong>${formatMoney(item.signal_close)}</strong></div>
-        <div class="card-metric"><span>入场触发</span><strong>${formatMoney(item.entry_price)}</strong></div>
-        <div class="card-metric"><span>失效价格</span><strong>${formatMoney(item.invalid_price || item.pre_entry_invalidation_price)}</strong></div>
-        <div class="card-metric"><span>跟踪止损</span><strong>${formatPercent(item.trailing_stop_pct || 0.03)}</strong></div>
-      </div>
-    </article>
-  `).join("");
+        <div class="card-item-metrics">
+          <div class="card-metric"><span>计划买入</span><strong>${formatMoney(buyPrice)}</strong></div>
+          <div class="card-metric"><span>止盈卖出</span><strong>${formatMoney(takeProfitPrice)}</strong></div>
+          <div class="card-metric"><span>止损离场</span><strong>${formatMoney(stopLossPrice)}</strong></div>
+          <div class="card-metric"><span>入场前失效</span><strong>${formatMoney(invalidPrice)}</strong></div>
+        </div>
+      </article>
+    `;
+  }).join("");
 }
 
 // 7. 渲染第三个看板：风险复盘 (Risks)
@@ -3056,13 +3404,28 @@ function renderRightDetail() {
   document.getElementById("detTurnover").textContent = turnoverVal;
   
   // 触发价格区间标尺与计算
-  const lowerVal = selected.entry_price || (selected.signal_close * 0.98);
-  const upperVal = selected.take_profit || (selected.signal_close * 1.05);
-  const middleVal = selected.stop_price || Number(((lowerVal + upperVal) / 2).toFixed(3));
+  const buyVal = getPlanBuyPrice(selected);
+  const takeProfitVal = getPlanTakeProfitPrice(selected) || Number((buyVal * 1.05).toFixed(3));
+  const stopLossVal = getPlanStopLossPrice(selected) || Number((buyVal * 0.96).toFixed(3));
+  const invalidVal = getPlanInvalidationPrice(selected);
+  const sliderLowerCandidates = [stopLossVal, invalidVal, buyVal].filter(value => Number.isFinite(value) && value > 0);
+  const lowerVal = sliderLowerCandidates.length ? Math.min(...sliderLowerCandidates) : 0;
+  const middleVal = buyVal || Number(((lowerVal + takeProfitVal) / 2).toFixed(3));
+  const upperVal = takeProfitVal || Number((middleVal * 1.05).toFixed(3));
   
   document.getElementById("detSliderLower").textContent = formatMoney(lowerVal);
   document.getElementById("detSliderMiddle").textContent = formatMoney(middleVal);
   document.getElementById("detSliderUpper").textContent = formatMoney(upperVal);
+
+  document.getElementById("detPlanBuy").textContent = formatMoney(buyVal);
+  document.getElementById("detPlanTakeProfit").textContent = formatMoney(takeProfitVal);
+  document.getElementById("detPlanStopLoss").textContent = formatMoney(stopLossVal);
+  const entryDistance = selected.entry_distance_pct || (selected.signal_close > 0 ? (buyVal - selected.signal_close) / selected.signal_close : 0);
+  const profitSpace = selected.profit_gap_pct || (buyVal > 0 ? (takeProfitVal - buyVal) / buyVal : 0);
+  const stopSpace = selected.stop_gap_pct || (buyVal > 0 ? (buyVal - stopLossVal) / buyVal : 0);
+  document.getElementById("detPlanBuyNote").textContent = `距当前 ${formatPercent(entryDistance)}`;
+  document.getElementById("detPlanProfitNote").textContent = `目标空间 ${formatPercent(profitSpace)}`;
+  document.getElementById("detPlanStopNote").textContent = `止损空间 ${formatPercent(stopSpace)}`;
   
   // 精算指针位置
   // SVG 宽度为 380px，分两段。
@@ -3454,15 +3817,259 @@ function saveDailyReportToServer() {
 }
 
 // ==========================================
-// 14. 8秒 L1 行情轮询与 SVG 滑尺自适应联动
+// 14. 看板自动刷新与实时价格轮询
+// ==========================================
+function initPollingControls() {
+  loadPollingPreferences();
+
+  const toggle = document.getElementById("autoRefreshToggle");
+  const intervalInput = document.getElementById("pollIntervalInput");
+  if (!toggle || !intervalInput) return;
+
+  intervalInput.min = state.minPollIntervalSeconds;
+  intervalInput.value = state.pollIntervalSeconds;
+  toggle.checked = state.autoRefreshEnabled;
+
+  if (state.autoRefreshEnabled && !isServiceMode()) {
+    state.autoRefreshEnabled = false;
+    toggle.checked = false;
+    savePollingPreferences();
+    state.refreshError = "静态文件模式不能自动拉取最新数据，请用 --serve 启动 Web 服务。";
+  }
+
+  toggle.addEventListener("change", (event) => {
+    setAutoRefreshEnabled(event.target.checked);
+  });
+
+  const updatePollInterval = (event, announce) => {
+    const rawValue = Number(event.target.value);
+    if (!Number.isFinite(rawValue) || rawValue <= 0) {
+      return;
+    }
+    const nextValue = Math.max(
+      state.minPollIntervalSeconds,
+      Math.floor(rawValue)
+    );
+    const changed = nextValue !== state.pollIntervalSeconds;
+    state.pollIntervalSeconds = nextValue;
+    intervalInput.value = nextValue;
+    savePollingPreferences();
+    if (state.autoRefreshEnabled) {
+      scheduleNextDashboardRefresh();
+      if (announce || changed) {
+        showToast(`自动刷新间隔已调整为 ${nextValue} 秒。`);
+      }
+    } else {
+      updatePollingStatus();
+    }
+  };
+
+  intervalInput.addEventListener("input", (event) => updatePollInterval(event, false));
+  intervalInput.addEventListener("change", (event) => updatePollInterval(event, true));
+
+  updatePollingStatus();
+  if (state.autoRefreshEnabled) {
+    scheduleNextDashboardRefresh();
+  }
+}
+
+function loadPollingPreferences() {
+  try {
+    const savedInterval = Number(localStorage.getItem("haitong-dashboard-poll-interval"));
+    const savedEnabled = localStorage.getItem("haitong-dashboard-auto-refresh");
+    if (Number.isFinite(savedInterval) && savedInterval > 0) {
+      state.pollIntervalSeconds = Math.max(state.minPollIntervalSeconds, Math.floor(savedInterval));
+    }
+    if (savedEnabled !== null) {
+      state.autoRefreshEnabled = savedEnabled === "true";
+    }
+  } catch (err) {
+    state.refreshError = "浏览器未开放本地设置存储，自动刷新设置仅本次有效。";
+  }
+}
+
+function savePollingPreferences() {
+  try {
+    localStorage.setItem("haitong-dashboard-poll-interval", String(state.pollIntervalSeconds));
+    localStorage.setItem("haitong-dashboard-auto-refresh", String(state.autoRefreshEnabled));
+  } catch (err) {
+    state.refreshError = "浏览器未开放本地设置存储，自动刷新设置仅本次有效。";
+  }
+}
+
+function setAutoRefreshEnabled(enabled) {
+  const toggle = document.getElementById("autoRefreshToggle");
+  const intervalInput = document.getElementById("pollIntervalInput");
+  if (enabled && intervalInput) {
+    const inputValue = Number(intervalInput.value);
+    if (Number.isFinite(inputValue) && inputValue > 0) {
+      state.pollIntervalSeconds = Math.max(state.minPollIntervalSeconds, Math.floor(inputValue));
+      intervalInput.value = state.pollIntervalSeconds;
+    }
+  }
+  if (enabled && !isServiceMode()) {
+    state.autoRefreshEnabled = false;
+    if (toggle) toggle.checked = false;
+    clearDashboardRefreshTimers();
+    updatePollingStatus();
+    showToast("静态文件模式不能自动拉取最新数据，请用 --serve 启动 Web 服务。");
+    return;
+  }
+
+  state.autoRefreshEnabled = Boolean(enabled);
+  if (toggle) toggle.checked = state.autoRefreshEnabled;
+  savePollingPreferences();
+
+  if (state.autoRefreshEnabled) {
+    scheduleNextDashboardRefresh();
+    showToast(`已开启自动刷新，每 ${state.pollIntervalSeconds} 秒更新一次看板。`);
+  } else {
+    clearDashboardRefreshTimers();
+    updatePollingStatus();
+    showToast("已关闭自动刷新。");
+  }
+}
+
+function scheduleNextDashboardRefresh() {
+  clearDashboardRefreshTimers();
+  if (!state.autoRefreshEnabled) {
+    updatePollingStatus();
+    return;
+  }
+  const intervalMs = Math.max(state.minPollIntervalSeconds, state.pollIntervalSeconds) * 1000;
+  state.nextRefreshAt = Date.now() + intervalMs;
+  state.pollTimerId = window.setTimeout(() => refreshDashboardData("auto"), intervalMs);
+  state.countdownTimerId = window.setInterval(updatePollingStatus, 1000);
+  updatePollingStatus();
+}
+
+function clearDashboardRefreshTimers() {
+  if (state.pollTimerId) {
+    window.clearTimeout(state.pollTimerId);
+    state.pollTimerId = null;
+  }
+  if (state.countdownTimerId) {
+    window.clearInterval(state.countdownTimerId);
+    state.countdownTimerId = null;
+  }
+  state.nextRefreshAt = null;
+}
+
+function updatePollingStatus() {
+  const lastEl = document.getElementById("lastRefreshText");
+  const nextEl = document.getElementById("nextRefreshText");
+  const statusBox = document.querySelector(".poll-status");
+  if (!lastEl || !nextEl || !statusBox) return;
+
+  statusBox.classList.toggle("is-error", Boolean(state.refreshError));
+  lastEl.textContent = state.refreshError || `最后刷新：${state.lastRefreshAt}`;
+
+  if (!state.autoRefreshEnabled || !state.nextRefreshAt) {
+    nextEl.textContent = "下次刷新：未开启";
+    return;
+  }
+  const seconds = Math.max(0, Math.ceil((state.nextRefreshAt - Date.now()) / 1000));
+  nextEl.textContent = `下次刷新：${seconds} 秒后`;
+}
+
+function setRefreshBusy(isBusy) {
+  state.isRefreshing = isBusy;
+  const button = document.getElementById("refreshButton");
+  if (!button) return;
+  button.classList.toggle("is-refreshing", isBusy);
+  button.disabled = isBusy;
+  const label = button.querySelector("span");
+  if (label) {
+    label.textContent = isBusy ? "刷新中" : "刷新";
+  }
+}
+
+async function refreshDashboardData(reason = "manual") {
+  if (state.isRefreshing) return;
+  if (!isServiceMode()) {
+    showToast("静态文件模式不能自动拉取最新数据，请用 --serve 启动 Web 服务。");
+    return;
+  }
+
+  setRefreshBusy(true);
+  try {
+    const response = await fetch(`/api/dashboard-summary?ts=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const summary = await response.json();
+    applyDashboardSummary(summary);
+    await runL1RealtimePriceTicker();
+    state.refreshError = "";
+    state.lastRefreshAt = summary.refreshed_at_label || new Date().toLocaleString("zh-CN", { hour12: false });
+    updatePollingStatus();
+    if (reason === "manual") {
+      showToast("看板数据已刷新，未执行 pipeline，也未改写交易计划。");
+    }
+  } catch (err) {
+    console.warn("看板刷新失败：", err);
+    state.refreshError = "刷新失败：保留上一次看板数据";
+    updatePollingStatus();
+    if (reason === "manual") {
+      showToast("刷新失败，已保留上一次看板数据。");
+    }
+  } finally {
+    setRefreshBusy(false);
+    if (state.autoRefreshEnabled) {
+      scheduleNextDashboardRefresh();
+    } else {
+      updatePollingStatus();
+    }
+  }
+}
+
+function applyDashboardSummary(summary) {
+  const selectedBefore = state.selectedSymbol;
+  REAL_DATA = summary || REAL_DATA;
+  REAL_DATA.candidates = REAL_DATA.candidates || [];
+  REAL_DATA.warnings = REAL_DATA.warnings || [];
+  REAL_DATA.daily_report = REAL_DATA.daily_report || { content: "" };
+  REAL_DATA.paper = REAL_DATA.paper || { summary: "暂无纸面账户摘要。" };
+
+  if (REAL_DATA.polling) {
+    state.minPollIntervalSeconds = Number(REAL_DATA.polling.min_interval_seconds || state.minPollIntervalSeconds);
+    state.pollIntervalSeconds = Math.max(
+      state.minPollIntervalSeconds,
+      Number(state.pollIntervalSeconds || REAL_DATA.polling.default_interval_seconds || 30)
+    );
+    const intervalInput = document.getElementById("pollIntervalInput");
+    if (intervalInput) {
+      intervalInput.min = state.minPollIntervalSeconds;
+      intervalInput.value = state.pollIntervalSeconds;
+    }
+  }
+
+  if (state.dataSource === "real") {
+    const stillExists = REAL_DATA.candidates.some(item => item.symbol === selectedBefore);
+    state.selectedSymbol = stillExists ? selectedBefore : (REAL_DATA.candidates[0]?.symbol || null);
+    renderKPIAndTopbar();
+    renderPanel();
+  }
+}
+
+function isServiceMode() {
+  return window.location.protocol === "http:" || window.location.protocol === "https:";
+}
+
+// ==========================================
+// 15. L1 行情轮询与 SVG 滑尺自适应联动
 // ==========================================
 function runL1RealtimePriceTicker() {
   const data = getActiveData();
-  if (!data.candidates || data.candidates.length === 0) return;
+  if (!isServiceMode() || !data.candidates || data.candidates.length === 0) {
+    return Promise.resolve(false);
+  }
 
-  const symbols = data.candidates.map(c => c.symbol).join(",");
+  const symbols = data.candidates
+    .map(c => `${c.symbol}:${Number(c.signal_close || c.entry_price || 2).toFixed(4)}`)
+    .join(",");
   
-  fetch(`/api/realtime-prices?symbols=${symbols}`)
+  return fetch(`/api/realtime-prices?symbols=${symbols}`, { cache: "no-store" })
   .then(res => res.json())
   .then(priceMap => {
     let anyChanged = false;
@@ -3472,15 +4079,16 @@ function runL1RealtimePriceTicker() {
       if (priceMap[c.symbol]) {
         const info = priceMap[c.symbol];
         if (c.signal_close !== info.price) {
+          const changePct = Number(info.change_pct || 0);
           c.signal_close = info.price;
-          c.change_pct = info.change;
+          c.change_pct = changePct;
           anyChanged = true;
           
           // 给表格的对应行增加闪烁动画或类
           const row = document.querySelector(`#candidateTable tr[onclick*="'${c.symbol}'"]`);
           if (row) {
             row.style.transition = "background-color 0.2s";
-            row.style.backgroundColor = info.change >= 0 ? "rgba(239, 68, 68, 0.15)" : "rgba(16, 185, 129, 0.15)";
+            row.style.backgroundColor = changePct >= 0 ? "rgba(239, 68, 68, 0.15)" : "rgba(16, 185, 129, 0.15)";
             setTimeout(() => {
               row.style.backgroundColor = "";
             }, 800);
@@ -3497,6 +4105,7 @@ function runL1RealtimePriceTicker() {
   })
   .catch(err => {
     console.warn("准实时行情接口轮询受限或超时，自适应降级为平稳运行模式。");
+    return false;
   });
 }
 

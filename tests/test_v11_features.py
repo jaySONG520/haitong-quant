@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import tempfile
 import types
@@ -9,16 +10,17 @@ import unittest
 from argparse import Namespace
 from datetime import date, datetime, time
 from pathlib import Path
+from unittest.mock import patch
 
 from haitong_quant.analysis.correlation import calculate_correlation_matrix
 from haitong_quant.backtest.optimizer import OptimizationResult, write_optimization_heatmap_csv
-from haitong_quant.cli import _cmd_pipeline
+from haitong_quant.cli import _cmd_notify_test, _cmd_pipeline
 from haitong_quant.config import load_config
 from haitong_quant.data import AKShareDataSource, DataCache
 from haitong_quant.logging_config import setup_logging
 from haitong_quant.models import AccountSnapshot, Bar, OrderIntent, Side
-from haitong_quant.ops.monitor import evaluate_trade_plan
-from haitong_quant.ops.notifiers import ConsoleNotifier, build_notifier
+from haitong_quant.ops.monitor import evaluate_trade_plan, monitor_loop
+from haitong_quant.ops.notifiers import ConsoleNotifier, WebhookNotifier, build_notifier
 from haitong_quant.ops.scheduler import render_windows_task_xml
 from haitong_quant.risk import PortfolioRiskChecker, PortfolioRiskConfig, RiskEngine, RuntimeRiskConfig
 from haitong_quant.strategy import build_strategy
@@ -213,6 +215,108 @@ class V11FeatureTests(unittest.TestCase):
             alerts = evaluate_trade_plan(plan, {"510300": 4.6})
             self.assertEqual(alerts[0].alert_type, "entry_triggered")
             self.assertEqual(alerts[1].alert_type, "take_profit_triggered")
+
+    def test_wechat_notifier_alias_and_payload(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsInstance(build_notifier("wechat"), ConsoleNotifier)
+
+        webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret-token"
+        with patch.dict(os.environ, {"HAITONG_QUANT_WECHAT_WEBHOOK_URL": webhook_url}, clear=True):
+            self.assertIsInstance(build_notifier("wecom"), WebhookNotifier)
+
+        sent_payloads = []
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"errcode":0}'
+
+        def fake_urlopen(req, timeout=10):
+            sent_payloads.append(json.loads(req.data.decode("utf-8")))
+            return FakeResponse()
+
+        with patch("haitong_quant.ops.notifiers.request.urlopen", fake_urlopen):
+            WebhookNotifier(webhook_url).send("测试标题", "测试正文")
+
+        self.assertEqual(sent_payloads[0]["msgtype"], "text")
+        self.assertIn("测试标题", sent_payloads[0]["text"]["content"])
+        self.assertNotIn("secret-token", json.dumps(sent_payloads[0], ensure_ascii=False))
+
+    def test_monitor_loop_deduplicates_repeated_alerts(self):
+        class CollectingNotifier:
+            def __init__(self):
+                self.messages = []
+
+            def send(self, title, body):
+                self.messages.append((title, body))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = Path(tmp) / "plan.json"
+            alerts_path = Path(tmp) / "alerts.jsonl"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "symbol": "510300",
+                                "status": "entry_candidate",
+                                "entry_price": 4.1,
+                                "pre_entry_invalidation_price": 3.8,
+                                "stop_loss_price_if_entry_fills": 3.7,
+                                "take_profit_price_if_entry_fills": 4.5,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            notifier = CollectingNotifier()
+
+            first = monitor_loop(
+                trade_plan_path=plan,
+                price_loader=lambda: {"510300": 4.6},
+                alerts_path=alerts_path,
+                notifier=notifier,
+                once=True,
+            )
+            second = monitor_loop(
+                trade_plan_path=plan,
+                price_loader=lambda: {"510300": 4.6},
+                alerts_path=alerts_path,
+                notifier=notifier,
+                once=True,
+            )
+
+            self.assertEqual([alert.alert_type for alert in first], ["entry_triggered", "take_profit_triggered"])
+            self.assertEqual(second, [])
+            self.assertEqual(len(notifier.messages), 2)
+            self.assertIn("入场触发", notifier.messages[0][0])
+
+    def test_notify_test_command_uses_safe_message(self):
+        config = load_config("configs/default.json")
+        args = Namespace(notifier="console", title="测试通知", body="不涉及交易")
+
+        result = _cmd_notify_test(config, args)
+
+        self.assertEqual(result, {"notifier": "console", "sent": True})
+
+    def test_notify_test_command_reports_send_failure(self):
+        config = load_config("configs/default.json")
+        args = Namespace(notifier="wechat", title="测试通知", body="不涉及交易")
+
+        with patch("haitong_quant.cli.build_notifier") as build:
+            notifier = types.SimpleNamespace(send=lambda title, body: (_ for _ in ()).throw(RuntimeError("network timeout")))
+            build.return_value = notifier
+            result = _cmd_notify_test(config, args)
+
+        self.assertEqual(result["notifier"], "wechat")
+        self.assertFalse(result["sent"])
+        self.assertIn("network timeout", result["error"])
 
     def test_pipeline_writes_manifest_in_output_dir(self):
         config = load_config("configs/default.json")

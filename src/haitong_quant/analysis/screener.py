@@ -170,24 +170,15 @@ class KlineNewsScreener:
         )
 
     def _rules(self, symbol: str, close: float, atr14_pct: float) -> TradingRuleSuggestion:
-        # 判断是否为 ETF 标的（6位数字代码且以1或5开头）
-        is_etf = len(symbol) == 6 and (symbol.startswith("1") or symbol.startswith("5"))
-        if is_etf:
-            # ETF 佣金率约为万分之一至万分之二，免最低 5 元起征点，免卖出印花税
-            round_trip_fee_pct = 0.0002
-            min_order = 100.0  # ETF 交易无起征限额压力，可低门槛投资
-        else:
-            # 普通 A 股，套用默认的单边最低 5 元限额和卖出印花税
-            round_trip_fee_pct = (
-                2 * self.min_trade_fee / self.default_order_value
-                + self.stock_sell_tax_bps / 10000.0
-            )
-            min_order = 2 * self.min_trade_fee / 0.003
+        round_trip_fee_pct = (
+            2 * self.min_trade_fee / self.default_order_value
+            + self.stock_sell_tax_bps / 10000.0
+        )
+        min_order = 2 * self.min_trade_fee / 0.003
         entry_trigger_pct = max(0.01, min(0.035, atr14_pct * 0.5 + round_trip_fee_pct))
         stop_loss_pct = max(0.04, min(0.12, atr14_pct * 2.0 + round_trip_fee_pct))
         take_profit_pct = max(stop_loss_pct * 1.8, round_trip_fee_pct + 0.04)
         trailing_stop_pct = max(0.03, min(0.10, atr14_pct * 1.5))
-        min_order = 2 * self.min_trade_fee / 0.003
         rule_text = (
             "Research rule: consider entry only if the candidate still passes "
             f"the score threshold and price breaks {entry_trigger_pct:.2%} above "

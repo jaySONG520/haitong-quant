@@ -63,6 +63,8 @@
     "pipeline_output_dir": "runs",
     "alerts_path": "reports/monitor_alerts.jsonl",
     "dashboard_path": "reports/dashboard.html",
+    "dashboard_poll_interval_seconds": 30,
+    "dashboard_min_poll_interval_seconds": 5,
     "notifier": {
       "type": "console"
     }

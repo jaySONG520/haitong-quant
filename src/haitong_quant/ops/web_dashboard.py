@@ -9,6 +9,8 @@ def create_flask_app(
     *,
     trade_plan_path: str | Path = "reports/trade_plan.json",
     daily_report_path: str | Path = "reports/daily_report.md",
+    dashboard_poll_interval_seconds: int = 30,
+    dashboard_min_poll_interval_seconds: int = 5,
 ):
     try:
         from flask import Flask, Response, jsonify
@@ -23,6 +25,8 @@ def create_flask_app(
             render_static_dashboard(
                 trade_plan_path=trade_plan_path,
                 daily_report_path=daily_report_path,
+                dashboard_poll_interval_seconds=dashboard_poll_interval_seconds,
+                dashboard_min_poll_interval_seconds=dashboard_min_poll_interval_seconds,
             ),
             mimetype="text/html",
         )
@@ -45,6 +49,8 @@ def create_flask_app(
             build_dashboard_summary(
                 trade_plan_path=trade_plan_path,
                 daily_report_path=daily_report_path,
+                dashboard_poll_interval_seconds=dashboard_poll_interval_seconds,
+                dashboard_min_poll_interval_seconds=dashboard_min_poll_interval_seconds,
             )
         )
 
@@ -52,12 +58,12 @@ def create_flask_app(
     def save_daily_report():
         from flask import request
         req_data = request.json or {}
-        content = req_data.get("content", "")
+        content = req_data.get("content", req_data.get("markdown", ""))
         path = Path(daily_report_path)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8-sig")
-            return jsonify({"success": True, "message": "日报修改已成功发布！"})
+            return jsonify({"success": True, "message": "日报修改已成功发布"})
         except Exception as exc:
             return jsonify({"success": False, "message": f"保存失败：{exc}"}), 500
 
@@ -137,9 +143,13 @@ def serve_dashboard(
     daily_report_path: str | Path = "reports/daily_report.md",
     host: str = "127.0.0.1",
     port: int = 8765,
+    dashboard_poll_interval_seconds: int = 30,
+    dashboard_min_poll_interval_seconds: int = 5,
 ) -> None:
     app = create_flask_app(
         trade_plan_path=trade_plan_path,
         daily_report_path=daily_report_path,
+        dashboard_poll_interval_seconds=dashboard_poll_interval_seconds,
+        dashboard_min_poll_interval_seconds=dashboard_min_poll_interval_seconds,
     )
     app.run(host=host, port=port)

@@ -3,11 +3,15 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime
+import logging
 from pathlib import Path
 from time import sleep
 from typing import Callable
 
 from haitong_quant.ops.notifiers import Notifier
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -44,15 +48,28 @@ def monitor_loop(
     once: bool = False,
 ) -> list[MonitorAlert]:
     all_alerts: list[MonitorAlert] = []
+    sent_keys = _load_existing_alert_keys(alerts_path)
     while True:
-        alerts = evaluate_trade_plan(trade_plan_path, price_loader())
+        alerts = [
+            alert
+            for alert in evaluate_trade_plan(trade_plan_path, price_loader())
+            if _alert_key(alert) not in sent_keys
+        ]
         if alerts:
             append_alerts(alerts_path, alerts)
             for alert in alerts:
-                notifier.send(
-                    f"{alert.symbol} {alert.alert_type}",
-                    f"price={alert.price:.4f}; threshold={alert.threshold:.4f}",
-                )
+                sent_keys.add(_alert_key(alert))
+                try:
+                    notifier.send(_alert_title(alert), _alert_body(alert))
+                except Exception as exc:
+                    LOGGER.warning(
+                        "notifier_send_failed",
+                        extra={
+                            "symbol": alert.symbol,
+                            "alert_type": alert.alert_type,
+                            "error": str(exc),
+                        },
+                    )
             all_alerts.extend(alerts)
         if once:
             return all_alerts
@@ -65,6 +82,57 @@ def append_alerts(path: str | Path, alerts: list[MonitorAlert]) -> None:
     with output_path.open("a", encoding="utf-8") as handle:
         for alert in alerts:
             handle.write(json.dumps(asdict(alert), ensure_ascii=False) + "\n")
+
+
+def _load_existing_alert_keys(path: str | Path) -> set[str]:
+    alerts_path = Path(path)
+    if not alerts_path.exists():
+        return set()
+    keys: set[str] = set()
+    for line in alerts_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        symbol = str(data.get("symbol", ""))
+        alert_type = str(data.get("alert_type", ""))
+        threshold = float(data.get("threshold") or 0)
+        if symbol and alert_type:
+            keys.add(f"{symbol}|{alert_type}|{threshold:.6f}")
+    return keys
+
+
+def _alert_key(alert: MonitorAlert) -> str:
+    return f"{alert.symbol}|{alert.alert_type}|{alert.threshold:.6f}"
+
+
+def _alert_title(alert: MonitorAlert) -> str:
+    labels = {
+        "entry_triggered": "入场触发",
+        "pre_entry_invalidated": "入场前失效",
+        "stop_loss_triggered": "止损触发",
+        "take_profit_triggered": "止盈触发",
+    }
+    label = labels.get(alert.alert_type, alert.alert_type)
+    return f"{alert.symbol} {label}"
+
+
+def _alert_body(alert: MonitorAlert) -> str:
+    labels = {
+        "entry_triggered": "当前价格已达到或高于入场触发价，请复核交易计划。",
+        "pre_entry_invalidated": "当前价格已跌破入场前失效价，本次入场计划应标记失效。",
+        "stop_loss_triggered": "当前价格已触及止损价，请按风控规则复核。",
+        "take_profit_triggered": "当前价格已触及止盈价，请复核是否减仓或退出。",
+    }
+    prefix = labels.get(alert.alert_type, "监控条件已触发，请复核。")
+    return (
+        f"{prefix}\n"
+        f"当前价：{alert.price:.4f}\n"
+        f"阈值：{alert.threshold:.4f}\n"
+        f"触发时间：{alert.generated_at}"
+    )
 
 
 def _alerts_for_item(item: dict, price: float) -> list[MonitorAlert]:
