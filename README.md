@@ -134,6 +134,41 @@ rotating logs, decision JSONL logs, notifier hooks, a strategy factory, and a
 static read-only dashboard. Live orders remain disabled unless the official
 broker adapter and live allowlists are explicitly configured.
 
+## 一劳永逸本地运行方式
+
+Windows PowerShell 推荐固定使用项目内虚拟环境，避免 MSYS2/系统 Python 的
+`externally-managed-environment` 和 CA 证书问题：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_env.ps1
+powershell -ExecutionPolicy Bypass -File scripts/run_dashboard.ps1
+```
+
+企业微信机器人只通过环境变量或脚本参数传入，不写入配置文件，也不要提交到
+GitHub。Webhook 应该长这样：
+
+```text
+https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
+```
+
+测试企业微信通知：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/notify_test_wechat.ps1 -WebhookUrl "你的企业微信Webhook"
+```
+
+启动止盈/止损/入场/失效监控并推送企业微信：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_monitor_wechat.ps1 -WebhookUrl "你的企业微信Webhook"
+```
+
+通知模块默认使用 `certifi` 提供的 CA 证书包；如果公司网络需要自定义 CA，可以设置：
+
+```powershell
+$env:HAITONG_QUANT_CA_BUNDLE="C:\path\to\company-ca.pem"
+```
+
 ## 项目结构
 
 - `src/haitong_quant/data`: CSV 与 AKShare 数据源

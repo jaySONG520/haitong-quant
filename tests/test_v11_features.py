@@ -20,7 +20,7 @@ from haitong_quant.data import AKShareDataSource, DataCache
 from haitong_quant.logging_config import setup_logging
 from haitong_quant.models import AccountSnapshot, Bar, OrderIntent, Side
 from haitong_quant.ops.monitor import evaluate_trade_plan, monitor_loop
-from haitong_quant.ops.notifiers import ConsoleNotifier, WebhookNotifier, build_notifier
+from haitong_quant.ops.notifiers import ConsoleNotifier, WebhookNotifier, _resolve_ca_bundle, build_notifier
 from haitong_quant.ops.scheduler import render_windows_task_xml
 from haitong_quant.risk import PortfolioRiskChecker, PortfolioRiskConfig, RiskEngine, RuntimeRiskConfig
 from haitong_quant.strategy import build_strategy
@@ -236,16 +236,25 @@ class V11FeatureTests(unittest.TestCase):
             def read(self):
                 return b'{"errcode":0}'
 
-        def fake_urlopen(req, timeout=10):
-            sent_payloads.append(json.loads(req.data.decode("utf-8")))
+        def fake_urlopen(req, **kwargs):
+            sent_payloads.append({"payload": json.loads(req.data.decode("utf-8")), "kwargs": kwargs})
             return FakeResponse()
 
         with patch("haitong_quant.ops.notifiers.request.urlopen", fake_urlopen):
             WebhookNotifier(webhook_url).send("测试标题", "测试正文")
 
-        self.assertEqual(sent_payloads[0]["msgtype"], "text")
-        self.assertIn("测试标题", sent_payloads[0]["text"]["content"])
-        self.assertNotIn("secret-token", json.dumps(sent_payloads[0], ensure_ascii=False))
+        self.assertEqual(sent_payloads[0]["payload"]["msgtype"], "text")
+        self.assertIn("测试标题", sent_payloads[0]["payload"]["text"]["content"])
+        self.assertIn("timeout", sent_payloads[0]["kwargs"])
+        self.assertNotIn("secret-token", json.dumps(sent_payloads[0]["payload"], ensure_ascii=False))
+
+    def test_ca_bundle_can_be_overridden_for_enterprise_python(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_path = Path(tmp) / "ca.pem"
+            ca_path.write_text("placeholder", encoding="utf-8")
+
+            with patch.dict(os.environ, {"HAITONG_QUANT_CA_BUNDLE": str(ca_path)}, clear=True):
+                self.assertEqual(_resolve_ca_bundle(), str(ca_path))
 
     def test_monitor_loop_deduplicates_repeated_alerts(self):
         class CollectingNotifier:

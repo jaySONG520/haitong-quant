@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import smtplib
 from dataclasses import dataclass
 from email.message import EmailMessage
+from pathlib import Path
 from typing import Protocol
 from urllib import request
 
@@ -22,6 +24,7 @@ class ConsoleNotifier:
 @dataclass(frozen=True)
 class WebhookNotifier:
     url: str
+    timeout_seconds: float = 10.0
 
     def send(self, title: str, body: str) -> None:
         payload = json.dumps({"msgtype": "text", "text": {"content": f"{title}\n{body}"}}).encode(
@@ -33,7 +36,11 @@ class WebhookNotifier:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with request.urlopen(req, timeout=10) as response:  # noqa: S310 - user configured URL
+        open_kwargs = {"timeout": self.timeout_seconds}
+        context = _ssl_context_for_url(self.url)
+        if context is not None:
+            open_kwargs["context"] = context
+        with request.urlopen(req, **open_kwargs) as response:  # noqa: S310 - user configured URL
             response.read()
 
 
@@ -60,6 +67,7 @@ class SMTPNotifier:
 @dataclass(frozen=True)
 class ServerChanNotifier:
     send_key: str
+    timeout_seconds: float = 10.0
 
     def send(self, title: str, body: str) -> None:
         payload = json.dumps({"title": title, "desp": body}).encode("utf-8")
@@ -69,8 +77,34 @@ class ServerChanNotifier:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with request.urlopen(req, timeout=10) as response:  # noqa: S310 - fixed Server Chan endpoint
+        open_kwargs = {"timeout": self.timeout_seconds}
+        context = _ssl_context_for_url(req.full_url)
+        if context is not None:
+            open_kwargs["context"] = context
+        with request.urlopen(req, **open_kwargs) as response:  # noqa: S310 - fixed Server Chan endpoint
             response.read()
+
+
+def _ssl_context_for_url(url: str) -> ssl.SSLContext | None:
+    if not url.lower().startswith("https://"):
+        return None
+    cafile = _resolve_ca_bundle()
+    if not cafile:
+        return None
+    return ssl.create_default_context(cafile=cafile)
+
+
+def _resolve_ca_bundle() -> str | None:
+    for env_name in ("HAITONG_QUANT_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+        raw_path = os.environ.get(env_name, "")
+        if raw_path and Path(raw_path).exists():
+            return raw_path
+    try:
+        import certifi
+    except ImportError:
+        return None
+    certifi_path = certifi.where()
+    return certifi_path if certifi_path and Path(certifi_path).exists() else None
 
 
 def build_notifier(kind: str) -> Notifier:
