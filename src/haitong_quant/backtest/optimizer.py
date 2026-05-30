@@ -114,5 +114,32 @@ def write_optimization_csv(path: str | Path, results: list[OptimizationResult]) 
             writer.writerow(asdict(result))
 
 
+def write_optimization_heatmap_csv(
+    path: str | Path,
+    results: list[OptimizationResult],
+    *,
+    metric: str = "avg_test_sharpe",
+) -> None:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["lookback_days", "top_n", "min_momentum", "metric", "value"],
+        )
+        writer.writeheader()
+        for result in results:
+            data = asdict(result)
+            writer.writerow(
+                {
+                    "lookback_days": result.lookback_days,
+                    "top_n": result.top_n,
+                    "min_momentum": result.min_momentum,
+                    "metric": metric,
+                    "value": data.get(metric, 0.0),
+                }
+            )
+
+
 def _avg(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0

@@ -11,6 +11,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 
 from haitong_quant.analysis.correlation import calculate_correlation_matrix
+from haitong_quant.backtest.optimizer import OptimizationResult, write_optimization_heatmap_csv
 from haitong_quant.cli import _cmd_pipeline
 from haitong_quant.config import load_config
 from haitong_quant.data import AKShareDataSource, DataCache
@@ -235,6 +236,32 @@ class V11FeatureTests(unittest.TestCase):
             self.assertTrue(Path(manifest["trade_plan"]).exists())
             self.assertTrue((Path(tmp) / "manifest.json").exists())
             self.assertIn("paper", manifest)
+
+    def test_optimization_heatmap_csv_writes_metric_grid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "heatmap.csv"
+            write_optimization_heatmap_csv(
+                output,
+                [
+                    OptimizationResult(
+                        lookback_days=20,
+                        top_n=2,
+                        min_momentum=0.0,
+                        avg_train_return=0.1,
+                        avg_test_return=0.05,
+                        avg_test_drawdown=-0.02,
+                        avg_train_sharpe=1.5,
+                        avg_test_sharpe=0.9,
+                        overfit_ratio=1.6,
+                        parameter_stability=0.8,
+                        window_count=3,
+                    )
+                ],
+            )
+
+            content = output.read_text(encoding="utf-8")
+            self.assertIn("avg_test_sharpe", content)
+            self.assertIn("0.9", content)
 
     def test_logging_writes_decision_jsonl(self):
         with tempfile.TemporaryDirectory() as tmp:

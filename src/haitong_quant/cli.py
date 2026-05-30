@@ -35,6 +35,7 @@ from haitong_quant.backtest import (
     WalkForwardEngine,
     run_parameter_grid,
     write_optimization_csv,
+    write_optimization_heatmap_csv,
 )
 from haitong_quant.broker import MockBroker, PaperTradingEngine
 from haitong_quant.config import QuantConfig, load_config
@@ -303,6 +304,8 @@ def _add_optimize(sub) -> None:
     parser.add_argument("--test-days", type=int, default=63)
     parser.add_argument("--step-days", type=int, default=63)
     parser.add_argument("--output", default="reports/optimization.csv")
+    parser.add_argument("--heatmap-output", default="reports/optimization_heatmap.csv")
+    parser.add_argument("--heatmap-metric", default="avg_test_sharpe")
 
 
 def _add_dashboard(sub) -> None:
@@ -549,8 +552,14 @@ def _cmd_optimize(config: QuantConfig, args) -> dict:
         step_days=args.step_days,
     )
     write_optimization_csv(args.output, results)
+    write_optimization_heatmap_csv(
+        args.heatmap_output,
+        results,
+        metric=args.heatmap_metric,
+    )
     return {
         "output": args.output,
+        "heatmap_output": args.heatmap_output,
         "best": asdict(results[0]) if results else None,
         "count": len(results),
     }
