@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from haitong_quant.ops.dashboard import build_dashboard_summary, render_static_dashboard
@@ -74,6 +75,9 @@ def create_flask_app(
         if not symbols_str:
             return jsonify({})
         symbols_list = [s.strip() for s in symbols_str.split(",") if s.strip()]
+        now = datetime.now()
+        refreshed_at = now.isoformat(timespec="seconds")
+        refreshed_at_label = now.strftime("%Y-%m-%d %H:%M:%S")
         
         results = {}
         try:
@@ -87,16 +91,16 @@ def create_flask_app(
             
             url = f"http://qt.gtimg.cn/q={','.join(queries)}"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=0.8) as response:
+            with urllib.request.urlopen(req, timeout=2.0) as response:
                 content = response.read().decode("gbk", errors="ignore")
                 
             for line in content.split(";"):
                 line = line.strip()
                 if not line or "=" not in line:
                     continue
-                parts = line.split("=")
+                parts = line.split("=", 1)
                 symbol_part = parts[0].split("_")[-1]
-                symbol = symbol_part[2:]
+                symbol = symbol_part[-6:]
                 data_str = parts[1].strip('"')
                 data_parts = data_str.split("~")
                 if len(data_parts) >= 6:
@@ -105,7 +109,9 @@ def create_flask_app(
                     results[symbol] = {
                         "price": price,
                         "change_pct": change_pct,
-                        "source": "live"
+                        "source": "live",
+                        "source_label": "实时行情",
+                        "refreshed_at": refreshed_at,
                     }
         except Exception:
             pass
@@ -129,9 +135,30 @@ def create_flask_app(
                 results[sym] = {
                     "price": simulated_price,
                     "change_pct": simulated_change,
-                    "source": "simulated"
+                    "source": "simulated",
+                    "source_label": "模拟行情",
+                    "refreshed_at": refreshed_at,
                 }
 
+        quote_values = [value for key, value in results.items() if not key.startswith("__")]
+        live_count = sum(1 for value in quote_values if value.get("source") == "live")
+        if live_count == len(quote_values) and quote_values:
+            source = "live"
+            source_label = "实时行情"
+        elif live_count > 0:
+            source = "mixed"
+            source_label = "实时/模拟混合行情"
+        else:
+            source = "simulated"
+            source_label = "模拟行情"
+        results["__meta__"] = {
+            "refreshed_at": refreshed_at,
+            "refreshed_at_label": refreshed_at_label,
+            "source": source,
+            "source_label": source_label,
+            "live_count": live_count,
+            "total_count": len(quote_values),
+        }
         return jsonify(results)
 
     return app

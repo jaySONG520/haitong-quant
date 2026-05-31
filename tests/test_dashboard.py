@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from haitong_quant.ops.dashboard import build_dashboard_summary, render_static_dashboard
 
@@ -64,6 +65,7 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("轮询间隔", html)
             self.assertIn("最后刷新", html)
             self.assertIn("下次刷新", html)
+            self.assertIn("行情来源", html)
             self.assertIn("价格执行计划", html)
             self.assertIn("计划买入价", html)
             self.assertIn("止盈卖出价", html)
@@ -164,6 +166,41 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertTrue(response.get_json()["success"])
             self.assertIn("新日报", daily_report.read_text(encoding="utf-8-sig"))
+
+    def test_realtime_prices_api_returns_quote_metadata(self):
+        try:
+            import flask  # noqa: F401
+        except ImportError:
+            self.skipTest("Flask is not installed")
+
+        from haitong_quant.ops.web_dashboard import create_flask_app
+
+        class FakeTencentResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return 'v_s_sh510500="1~中证500ETF~510500~7.123~0.07~1.23";'.encode("gbk")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = create_flask_app(
+                trade_plan_path=Path(tmp) / "trade_plan.json",
+                daily_report_path=Path(tmp) / "daily_report.md",
+            )
+            client = app.test_client()
+            with patch("urllib.request.urlopen", return_value=FakeTencentResponse()):
+                response = client.get("/api/realtime-prices?symbols=510500:7.100")
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["510500"]["price"], 7.123)
+            self.assertEqual(payload["510500"]["source"], "live")
+            self.assertEqual(payload["__meta__"]["source"], "live")
+            self.assertEqual(payload["__meta__"]["source_label"], "实时行情")
+            self.assertIn("refreshed_at_label", payload["__meta__"])
 
 
 if __name__ == "__main__":

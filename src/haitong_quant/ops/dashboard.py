@@ -563,6 +563,7 @@ __DASHBOARD_STYLE__
               <div class="poll-status" aria-live="polite">
                 <span id="lastRefreshText">最后刷新：尚未刷新</span>
                 <span id="nextRefreshText">下次刷新：未开启</span>
+                <span id="priceSourceText">行情来源：待刷新</span>
               </div>
             </div>
           </div>
@@ -1601,6 +1602,11 @@ body {
   white-space: nowrap;
   font-size: 12px;
   font-weight: 700;
+}
+
+.poll-switch {
+  cursor: pointer;
+  user-select: none;
 }
 
 .poll-switch input {
@@ -2846,6 +2852,7 @@ const state = {
   countdownTimerId: null,
   nextRefreshAt: null,
   lastRefreshAt: REAL_DATA.refreshed_at_label || "尚未刷新",
+  priceSourceLabel: "行情来源：待刷新",
   refreshError: "",
   isRefreshing: false
 };
@@ -3036,10 +3043,11 @@ function toggleAssetPrivacy() {
 // 渲染 KPI 数据和顶部元信息
 function renderKPIAndTopbar() {
   const data = getActiveData();
+  const displayTime = data.refreshed_at || data.generated_at;
   
   // 顶部元信息
-  document.getElementById("dateStr").textContent = state.dataSource === "demo" ? "2025-05-20 (周二)" : formatRealDate(data.generated_at);
-  document.getElementById("timeStr").textContent = state.dataSource === "demo" ? "15:00:00" : formatRealTime(data.generated_at);
+  document.getElementById("dateStr").textContent = state.dataSource === "demo" ? "2025-05-20 (周二)" : formatRealDate(displayTime);
+  document.getElementById("timeStr").textContent = state.dataSource === "demo" ? "15:00:00" : formatRealTime(displayTime);
   
   // KPI 卡片数据
   let candCount = 0;
@@ -3533,7 +3541,9 @@ function getStatusBadgeClass(status) {
 // 格式化真实后端日期时间
 function formatRealDate(isoStr) {
   try {
+    if (!isoStr) return "暂无数据日期";
     const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return "暂无数据日期";
     const weeks = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} (${weeks[d.getDay()]})`;
   } catch(e) {
@@ -3543,7 +3553,9 @@ function formatRealDate(isoStr) {
 
 function formatRealTime(isoStr) {
   try {
+    if (!isoStr) return "--:--:--";
     const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return "--:--:--";
     return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
   } catch(e) {
     return "15:00:00";
@@ -3840,6 +3852,15 @@ function initPollingControls() {
   toggle.addEventListener("change", (event) => {
     setAutoRefreshEnabled(event.target.checked);
   });
+  const switchLabel = toggle.closest(".poll-switch");
+  if (switchLabel) {
+    switchLabel.addEventListener("click", (event) => {
+      if (event.target === toggle) return;
+      event.preventDefault();
+      toggle.checked = !toggle.checked;
+      setAutoRefreshEnabled(toggle.checked);
+    });
+  }
 
   const updatePollInterval = (event, announce) => {
     const rawValue = Number(event.target.value);
@@ -3958,11 +3979,15 @@ function clearDashboardRefreshTimers() {
 function updatePollingStatus() {
   const lastEl = document.getElementById("lastRefreshText");
   const nextEl = document.getElementById("nextRefreshText");
+  const sourceEl = document.getElementById("priceSourceText");
   const statusBox = document.querySelector(".poll-status");
   if (!lastEl || !nextEl || !statusBox) return;
 
   statusBox.classList.toggle("is-error", Boolean(state.refreshError));
   lastEl.textContent = state.refreshError || `最后刷新：${state.lastRefreshAt}`;
+  if (sourceEl) {
+    sourceEl.textContent = state.priceSourceLabel || "行情来源：待刷新";
+  }
 
   if (!state.autoRefreshEnabled || !state.nextRefreshAt) {
     nextEl.textContent = "下次刷新：未开启";
@@ -3998,11 +4023,12 @@ async function refreshDashboardData(reason = "manual") {
       throw new Error(`HTTP ${response.status}`);
     }
     const summary = await response.json();
-    applyDashboardSummary(summary);
-    await runL1RealtimePriceTicker();
     state.refreshError = "";
     state.lastRefreshAt = summary.refreshed_at_label || new Date().toLocaleString("zh-CN", { hour12: false });
+    applyDashboardSummary(summary);
+    await runL1RealtimePriceTicker();
     updatePollingStatus();
+    renderKPIAndTopbar();
     if (reason === "manual") {
       showToast("看板数据已刷新，未执行 pipeline，也未改写交易计划。");
     }
@@ -4061,6 +4087,11 @@ function isServiceMode() {
 // ==========================================
 function runL1RealtimePriceTicker() {
   const data = getActiveData();
+  if (state.dataSource !== "real") {
+    state.priceSourceLabel = "行情来源：演示数据";
+    updatePollingStatus();
+    return Promise.resolve(false);
+  }
   if (!isServiceMode() || !data.candidates || data.candidates.length === 0) {
     return Promise.resolve(false);
   }
@@ -4072,16 +4103,28 @@ function runL1RealtimePriceTicker() {
   return fetch(`/api/realtime-prices?symbols=${symbols}`, { cache: "no-store" })
   .then(res => res.json())
   .then(priceMap => {
+    const meta = priceMap.__meta__ || {};
+    const refreshedAt = meta.refreshed_at || new Date().toISOString();
+    const refreshedLabel = meta.refreshed_at_label || new Date().toLocaleString("zh-CN", { hour12: false });
+    const sourceLabel = meta.source_label || "行情已刷新";
+    data.refreshed_at = refreshedAt;
+    data.refreshed_at_label = refreshedLabel;
+    state.lastRefreshAt = refreshedLabel;
+    state.priceSourceLabel = `行情来源：${sourceLabel}`;
     let anyChanged = false;
+    let anyQuote = false;
     
     // 更新数据
     data.candidates.forEach(c => {
       if (priceMap[c.symbol]) {
+        anyQuote = true;
         const info = priceMap[c.symbol];
-        if (c.signal_close !== info.price) {
+        if (Number(c.signal_close) !== Number(info.price)) {
           const changePct = Number(info.change_pct || 0);
-          c.signal_close = info.price;
+          c.signal_close = Number(info.price || 0);
           c.change_pct = changePct;
+          c.quote_source = info.source || meta.source || "";
+          c.quote_refreshed_at = info.refreshed_at || refreshedAt;
           anyChanged = true;
           
           // 给表格的对应行增加闪烁动画或类
@@ -4102,8 +4145,17 @@ function runL1RealtimePriceTicker() {
       renderPanel();
       renderKPIAndTopbar();
     }
+    if (!anyChanged && anyQuote) {
+      renderPanel();
+    }
+    renderKPIAndTopbar();
+    updatePollingStatus();
+    return anyChanged || anyQuote;
   })
   .catch(err => {
+    state.priceSourceLabel = "行情来源：暂不可用，保留上一轮";
+    updatePollingStatus();
+    renderKPIAndTopbar();
     console.warn("准实时行情接口轮询受限或超时，自适应降级为平稳运行模式。");
     return false;
   });
