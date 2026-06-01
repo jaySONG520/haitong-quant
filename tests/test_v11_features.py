@@ -329,11 +329,18 @@ class V11FeatureTests(unittest.TestCase):
 
     def test_pipeline_writes_manifest_in_output_dir(self):
         config = load_config("configs/default.json")
+        # 限制 symbols 范围，避免 default.json 中新增的标的在 sample_prices.csv 中缺失导致报错
+        import dataclasses
+        config = dataclasses.replace(
+            config,
+            strategy=dataclasses.replace(config.strategy, symbols=("510300", "510500", "512100", "518880")),
+            risk=dataclasses.replace(config.risk, allowed_symbols=("510300", "510500", "512100", "518880"))
+        )
         with tempfile.TemporaryDirectory() as tmp:
             args = Namespace(
                 mode="paper",
                 output_dir=tmp,
-                prices=None,
+                prices="data/sample_prices.csv",
                 news=None,
                 raw_news=None,
                 top_n=2,

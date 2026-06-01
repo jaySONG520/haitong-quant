@@ -1,1281 +1,11 @@
-from __future__ import annotations
-
-import json
-from datetime import datetime
-from pathlib import Path
-from statistics import mean
-from typing import Any
-
-
-STATUS_LABELS = {
-    "entry_candidate": "可入场候选",
-    "watch_only": "观察",
-    "skip": "跳过",
-}
-STATUS_TONES = {
-    "entry_candidate": "positive",
-    "watch_only": "warning",
-    "skip": "muted",
-}
-STATUS_ORDER = {"entry_candidate": 0, "watch_only": 1, "skip": 2}
-BIAS_LABELS = {
-    "rule_constructive": "规则偏强",
-    "rule_watchlist": "观察名单",
-    "rule_weak": "规则偏弱",
-    "rule_neutral": "中性",
-}
-NOTE_TRANSLATIONS = {
-    "5-day momentum is positive": "5日动量为正",
-    "20-day momentum is positive": "20日动量为正",
-    "latest close is above MA20": "收盘价站上20日均线",
-    "medium trend is not below long trend": "中期趋势不弱于长期趋势",
-    "recent volume is above 20-day average": "近期成交量高于20日均量",
-    "reviewed recent-news score is positive": "已复核新闻分数为正",
-    "RSI is in a constructive, not extreme, zone": "RSI处于较健康区间",
-    "news input missing; K-line-only candidate": "缺少新闻输入，仅基于K线筛选",
-    "5-day momentum is negative": "5日动量为负",
-    "20-day momentum is negative": "20日动量为负",
-    "latest close is below MA20": "收盘价低于20日均线",
-    "RSI is high; chasing risk is elevated": "RSI偏高，追价风险抬升",
-    "ATR volatility is high": "ATR波动率偏高",
-    "price is still more than 10% below recent high": "价格仍低于近期高点超过10%",
-    "reviewed recent-news score is negative": "已复核新闻分数偏负",
-    "recent-news score is missing; do not treat as news-confirmed": "缺少新闻分数，不能视为新闻确认",
-}
-NEWS_TRANSLATIONS = {
-    "Sample positive broad sector liquidity note": "样例新闻：宽基流动性偏正面",
-    "Sample mildly negative gold-related macro note": "样例新闻：黄金相关宏观信息略偏负",
-    "Sample neutral small/mid-cap ETF news input": "样例新闻：中小盘ETF信息中性",
-    "no reviewed recent-news score supplied": "未提供已复核新闻分数",
-}
-SECURITY_NAME_MAP = {
-    # 宽基指数 ETF
-    "510300": "沪深300ETF",
-    "510050": "上证50ETF",
-    "159915": "创业板ETF",
-    "512100": "中证1000ETF南方",
-    "159922": "中证500ETF",
-    "510500": "中证500ETF南方",
-    "159601": "A50ETF",
-    "588000": "科创50ETF",
-    "159919": "沪深300ETF华安",
-    # 行业/主题 ETF
-    "512480": "半导体ETF",
-    "512660": "军工ETF",
-    "512010": "医药ETF",
-    "159928": "消费ETF",
-    "515030": "新能源车ETF",
-    "512690": "酒ETF",
-    "512000": "券商ETF",
-    "515880": "通信ETF",
-    "512800": "银行ETF",
-    "159869": "游戏ETF",
-    "516160": "新能源ETF",
-    "515790": "光伏ETF",
-    "512980": "传媒ETF",
-    "515050": "5GETF",
-    "159941": "纳指ETF",
-    "510880": "红利ETF",
-    "512580": "环保ETF",
-    "159745": "碳中和ETF",
-    # 商品 ETF
-    "518880": "黄金ETF华安",
-}
-SECURITY_INDEX_MAP = {
-    # 宽基指数 ETF
-    "510300": "沪深300",
-    "510050": "上证50",
-    "159915": "创业板指",
-    "512100": "中证1000",
-    "159922": "中证500",
-    "510500": "中证500",
-    "159601": "富时中国A50",
-    "588000": "科创50",
-    "159919": "沪深300",
-    # 行业/主题 ETF
-    "512480": "中证半导体",
-    "512660": "中证军工",
-    "512010": "中证医药",
-    "159928": "中证消费",
-    "515030": "CS新能车",
-    "512690": "中证白酒",
-    "512000": "中证全指证券",
-    "515880": "中证全指通信",
-    "512800": "中证银行",
-    "159869": "中证动漫游戏",
-    "516160": "CS新能源",
-    "515790": "中证光伏产业",
-    "512980": "中证传媒",
-    "515050": "中证5G通信",
-    "159941": "纳斯达克100",
-    "510880": "上证红利",
-    "512580": "中证环保",
-    "159745": "碳中和",
-    # 商品 ETF
-    "518880": "黄金现货",
-}
-
-
-def render_static_dashboard(
-    *,
-    trade_plan_path: str | Path = "reports/trade_plan.json",
-    daily_report_path: str | Path = "reports/daily_report.md",
-    config_path: str | Path | None = None,
-    paper_report: dict | None = None,
-    dashboard_poll_interval_seconds: int = 30,
-    dashboard_min_poll_interval_seconds: int = 5,
-) -> str:
-    summary = build_dashboard_summary(
-        trade_plan_path=trade_plan_path,
-        daily_report_path=daily_report_path,
-        config_path=config_path,
-        paper_report=paper_report,
-        dashboard_poll_interval_seconds=dashboard_poll_interval_seconds,
-        dashboard_min_poll_interval_seconds=dashboard_min_poll_interval_seconds,
-    )
-    data_json = _json_for_script(summary)
-    return (
-        HTML_TEMPLATE.replace("__DASHBOARD_DATA__", data_json)
-        .replace("__DASHBOARD_STYLE__", DASHBOARD_STYLE)
-        .replace("__DASHBOARD_SCRIPT__", DASHBOARD_SCRIPT)
-    )
-
-
-def build_dashboard_summary(
-    *,
-    trade_plan_path: str | Path = "reports/trade_plan.json",
-    daily_report_path: str | Path = "reports/daily_report.md",
-    config_path: str | Path | None = None,
-    paper_report: dict | None = None,
-    dashboard_poll_interval_seconds: int = 30,
-    dashboard_min_poll_interval_seconds: int = 5,
-) -> dict[str, Any]:
-    trade_path = Path(trade_plan_path)
-    daily_path = Path(daily_report_path)
-    payload = _load_trade_plan_payload(trade_path)
-    items = payload.get("items", [])
-    if not isinstance(items, list):
-        items = []
-    generated_at = str(payload.get("generated_at") or _mtime_iso(trade_path) or "")
-    plan_date = _date_label(generated_at)
-    candidates = [_normalize_candidate(item, index, generated_at=generated_at, plan_date=plan_date) for index, item in enumerate(items)]
-    plan_candidate_count = len(candidates)
-    resolved_config_path = _resolve_config_path(
-        config_path or payload.get("config"),
-        trade_path=trade_path,
-    )
-    config_symbols = load_dashboard_config_symbols(resolved_config_path)
-    config_added_count = _append_config_universe_candidates(
-        candidates,
-        config_symbols,
-        generated_at=generated_at,
-        plan_date=plan_date,
-    )
-    daily_payload = read_dashboard_daily_report(daily_path)
-    daily_content = str(daily_payload["content"])
-    effective_daily_path = Path(str(daily_payload["path"]))
-    warnings = []
-    if not trade_path.exists():
-        warnings.append("未找到交易计划文件，候选看板为空。")
-    if not daily_path.exists():
-        warnings.append("未找到研究日报文件，日报区域为空。")
-    elif daily_payload.get("used_fallback"):
-        warnings.append(f"日报原文件内容较少，已自动展示 {effective_daily_path.name}。")
-    if not candidates:
-        warnings.append("当前没有可展示的候选标的。")
-    elif config_added_count:
-        warnings.append(
-            f"交易计划生成了 {plan_candidate_count} 个候选；看板已从配置股票池补全 "
-            f"{config_added_count} 个观察标的。补全标的仅用于行情观察，运行 pipeline 后才会生成买入、止盈、止损计划。"
-        )
-    elif payload.get("config") or resolved_config_path:
-        warnings.append(
-            f"当前看板展示交易计划中的 {plan_candidate_count} 个候选；如需扩大股票池，请更新配置并重新运行 universe/pipeline。"
-        )
-    min_interval = max(1, int(dashboard_min_poll_interval_seconds or 5))
-    default_interval = max(min_interval, int(dashboard_poll_interval_seconds or 30))
-    refreshed_at = datetime.now().isoformat(timespec="seconds")
-    return {
-        "generated_at": generated_at,
-        "generated_at_label": _format_datetime(generated_at) if generated_at else "暂无数据时间",
-        "refreshed_at": refreshed_at,
-        "refreshed_at_label": _format_datetime(refreshed_at),
-        "polling": {
-            "default_interval_seconds": default_interval,
-            "min_interval_seconds": min_interval,
-        },
-        "mode_label": "只读研究模式" if payload.get("research_only", True) else "未确认模式",
-        "source_paths": {
-            "trade_plan": str(trade_path),
-            "daily_report": str(effective_daily_path),
-            "daily_report_requested": str(daily_path),
-            "config": str(resolved_config_path) if resolved_config_path else "",
-        },
-        "metrics": _build_metrics(candidates),
-        "candidates": candidates,
-        "daily_report": {
-            "path": str(effective_daily_path),
-            "requested_path": str(daily_path),
-            "exists": bool(daily_payload["exists"]),
-            "used_fallback": bool(daily_payload["used_fallback"]),
-            "content": _localize_report_content(daily_content),
-            "preview": _daily_preview(daily_content),
-        },
-        "paper": _paper_summary(paper_report),
-        "warnings": warnings,
-        "disclaimer": "本页面为只读研究看板，不构成投资建议，不保证收益，不提供实盘下单入口。",
-    }
-
-
-def write_static_dashboard(path: str | Path, content: str) -> None:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(content, encoding="utf-8")
-
-
-def _load_trade_plan_payload(path: str | Path) -> dict[str, Any]:
-    plan_path = Path(path)
-    if not plan_path.exists():
-        return {"items": []}
-    payload = json.loads(plan_path.read_text(encoding="utf-8-sig"))
-    return payload if isinstance(payload, dict) else {"items": []}
-
-
-def _load_trade_plan_items(path: str | Path) -> list[dict]:
-    payload = _load_trade_plan_payload(path)
-    items = payload.get("items", [])
-    return items if isinstance(items, list) else []
-
-
-def _resolve_config_path(raw_path: str | Path | None, *, trade_path: Path) -> Path | None:
-    if not raw_path:
-        return None
-    path = Path(raw_path)
-    if path.is_absolute():
-        return path
-    cwd_path = Path.cwd() / path
-    if cwd_path.exists():
-        return cwd_path
-    plan_relative = trade_path.parent / path
-    if plan_relative.exists():
-        return plan_relative
-    return path
-
-
-def load_dashboard_config_symbols(config_path: str | Path | None) -> list[str]:
-    if not config_path:
-        return []
-    path = Path(config_path)
-    if not path.exists():
-        return []
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
-        return []
-
-    symbols: list[str] = []
-    seen: set[str] = set()
-    for section, key in (("strategy", "symbols"), ("risk", "allowed_symbols")):
-        values = payload.get(section, {}).get(key, [])
-        if not isinstance(values, list):
-            continue
-        for value in values:
-            symbol = str(value or "").strip()
-            if symbol and symbol not in seen:
-                seen.add(symbol)
-                symbols.append(symbol)
-    return symbols
-
-
-def _append_config_universe_candidates(
-    candidates: list[dict[str, Any]],
-    symbols: list[str],
-    *,
-    generated_at: str,
-    plan_date: str,
-) -> int:
-    existing = {str(item.get("symbol") or "") for item in candidates}
-    added = 0
-    for symbol in symbols:
-        if symbol in existing:
-            continue
-        candidates.append(
-            _config_universe_candidate(
-                symbol,
-                len(candidates),
-                generated_at=generated_at,
-                plan_date=plan_date,
-            )
-        )
-        existing.add(symbol)
-        added += 1
-    return added
-
-
-def _config_universe_candidate(
-    symbol: str,
-    index: int,
-    *,
-    generated_at: str = "",
-    plan_date: str = "",
-) -> dict[str, Any]:
-    return {
-        "symbol": symbol,
-        "name": SECURITY_NAME_MAP.get(symbol, symbol),
-        "index_name": SECURITY_INDEX_MAP.get(symbol, "配置股票池"),
-        "status": "watch_only",
-        "status_label": STATUS_LABELS["watch_only"],
-        "status_tone": STATUS_TONES["watch_only"],
-        "status_rank": STATUS_ORDER["watch_only"],
-        "score": 0.0,
-        "signal_close": 0.0,
-        "plan_signal_close": 0.0,
-        "plan_generated_at": generated_at,
-        "date": plan_date,
-        "entry_price": 0.0,
-        "pre_entry_invalidation_price": 0.0,
-        "stop_loss_price": 0.0,
-        "take_profit_price": 0.0,
-        "trailing_stop_pct": 0.0,
-        "entry_distance_pct": 0.0,
-        "stop_gap_pct": 0.0,
-        "profit_gap_pct": 0.0,
-        "risk_reward": 0.0,
-        "assumed_order_value": 0.0,
-        "estimated_round_trip_fee": 0.0,
-        "news_score": 0.0,
-        "news_summary": "来自配置股票池，尚未进入本次交易计划。",
-        "news_url": "",
-        "short_term_bias_label": "待计算",
-        "medium_term_bias_label": "待计算",
-        "advantages": ["来自配置股票池，可用于行情观察"],
-        "risks": ["尚未生成交易计划，不可作为入场信号"],
-        "signal_name": "配置股票池",
-        "risk_level": "未评级",
-        "row_id": f"candidate-{index}",
-        "is_config_coverage": True,
-    }
-
-
-def _normalize_candidate(item: dict[str, Any], index: int, *, generated_at: str = "", plan_date: str = "") -> dict[str, Any]:
-    status = str(item.get("status") or "")
-    symbol = str(item.get("symbol") or "")
-    name = str(item.get("name") or SECURITY_NAME_MAP.get(symbol) or symbol)
-    index_name = str(item.get("index_name") or item.get("index") or SECURITY_INDEX_MAP.get(symbol) or "")
-    entry_price = _to_float(item.get("entry_price"))
-    signal_close = _to_float(item.get("signal_close"))
-    stop_price = _to_float(item.get("stop_loss_price_if_entry_fills"))
-    take_profit = _to_float(item.get("take_profit_price_if_entry_fills"))
-    stop_gap_pct = _ratio(entry_price - stop_price, entry_price)
-    profit_gap_pct = _ratio(take_profit - entry_price, entry_price)
-    entry_distance_pct = _ratio(entry_price - signal_close, signal_close)
-    risk_reward = (profit_gap_pct / stop_gap_pct) if stop_gap_pct > 0 else 0.0
-    return {
-        "symbol": symbol,
-        "name": name,
-        "index_name": index_name,
-        "status": status,
-        "status_label": STATUS_LABELS.get(status, "待确认"),
-        "status_tone": STATUS_TONES.get(status, "muted"),
-        "status_rank": STATUS_ORDER.get(status, 9),
-        "score": _to_float(item.get("total_score")),
-        "signal_close": signal_close,
-        "plan_signal_close": signal_close,
-        "plan_generated_at": generated_at,
-        "date": str(item.get("date") or plan_date or ""),
-        "entry_price": entry_price,
-        "pre_entry_invalidation_price": _to_float(item.get("pre_entry_invalidation_price")),
-        "stop_loss_price": stop_price,
-        "take_profit_price": take_profit,
-        "trailing_stop_pct": _to_float(item.get("trailing_stop_pct")),
-        "entry_distance_pct": entry_distance_pct,
-        "stop_gap_pct": stop_gap_pct,
-        "profit_gap_pct": profit_gap_pct,
-        "risk_reward": risk_reward,
-        "assumed_order_value": _to_float(item.get("assumed_order_value")),
-        "estimated_round_trip_fee": _to_float(item.get("estimated_round_trip_fee")),
-        "news_score": _to_float(item.get("news_score")),
-        "news_summary": _localize_news(str(item.get("news_summary") or "")),
-        "news_url": str(item.get("news_url") or ""),
-        "short_term_bias_label": BIAS_LABELS.get(str(item.get("short_term_bias") or ""), "未确认"),
-        "medium_term_bias_label": BIAS_LABELS.get(str(item.get("medium_term_bias") or ""), "未确认"),
-        "advantages": _localize_notes(item.get("advantages"), fallback="暂无明确优势标签"),
-        "risks": _localize_notes(item.get("risks"), fallback="暂无突出风险标签"),
-        "row_id": f"candidate-{index}",
-    }
-
-
-def _build_metrics(candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    scores = [item["score"] for item in candidates]
-    entry_count = sum(1 for item in candidates if item["status"] == "entry_candidate")
-    watch_count = sum(1 for item in candidates if item["status"] == "watch_only")
-    skip_count = sum(1 for item in candidates if item["status"] == "skip")
-    top = max(candidates, key=lambda item: item["score"], default=None)
-    risk_count = sum(len(item["risks"]) for item in candidates if item["risks"] != ["暂无突出风险标签"])
-    return {
-        "candidate_count": len(candidates),
-        "entry_count": entry_count,
-        "watch_count": watch_count,
-        "skip_count": skip_count,
-        "max_score": max(scores) if scores else 0.0,
-        "avg_score": mean(scores) if scores else 0.0,
-        "top_symbol": top["symbol"] if top else "暂无",
-        "risk_count": risk_count,
-    }
-
-
-def _paper_summary(paper_report: dict | None) -> dict[str, Any]:
-    if not paper_report:
-        return {
-            "available": False,
-            "all_passed": False,
-            "summary": "未读取纸面账户报告",
-            "passed_count": 0,
-            "failed_count": 0,
-        }
-    results = paper_report.get("results", [])
-    if not isinstance(results, list):
-        results = []
-    passed_count = sum(1 for item in results if item.get("passed"))
-    failed_count = len(results) - passed_count
-    all_passed = bool(paper_report.get("all_passed"))
-    summary = (
-        f"纸面撮合共检查 {len(results)} 笔，"
-        f"{passed_count} 笔通过，{failed_count} 笔需复核。"
-    )
-    if all_passed:
-        summary += " 当前纸面检查通过。"
-    elif results:
-        summary += " 存在未通过项目，请先复核。"
-    return {
-        "available": True,
-        "all_passed": all_passed,
-        "summary": summary,
-        "passed_count": passed_count,
-        "failed_count": failed_count,
-    }
-
-
-def _localize_notes(values: Any, *, fallback: str) -> list[str]:
-    if not isinstance(values, (list, tuple)):
-        return [fallback]
-    translated = [_localize_note(str(value)) for value in values if str(value).strip()]
-    return translated or [fallback]
-
-
-def _localize_note(value: str) -> str:
-    if value in NOTE_TRANSLATIONS:
-        return NOTE_TRANSLATIONS[value]
-    if _looks_ascii_text(value):
-        return "规则提示已记录，请结合原始数据复核。"
-    return value
-
-
-def _localize_news(value: str) -> str:
-    if not value.strip():
-        return "暂无新闻摘要"
-    if value in NEWS_TRANSLATIONS:
-        return NEWS_TRANSLATIONS[value]
-    if _looks_ascii_text(value):
-        return "新闻摘要已记录，请在原始数据源中复核。"
-    return value
-
-
-def _localize_report_content(content: str) -> str:
-    localized = content
-    replacements = {
-        "Quant Candidate Research Report": "量化候选研究日报",
-        "Generated at:": "生成时间：",
-        "Config:": "配置文件：",
-        "News input:": "新闻输入：",
-        "Assumed order value:": "假设单笔金额：",
-        "Minimum score:": "最低入选分数：",
-        "Research output only. This is a rules-based screen, not a return guarantee or personalized buy/sell instruction.": "本报告仅用于研究复盘。它是基于规则的筛选结果，不代表收益保证，也不构成个性化买卖指令。",
-        "Ranked Candidates": "候选排序",
-        "Close:": "收盘价：",
-        "Total score:": "综合得分：",
-        "Short-term bias:": "短期倾向：",
-        "Medium-term bias:": "中期倾向：",
-        "News score:": "新闻分数：",
-        "News summary:": "新闻摘要：",
-        "News URL: n/a": "新闻链接：无",
-        "News URL:": "新闻链接：",
-        "Advantages:": "优势：",
-        "Risks:": "风险：",
-        "Key metrics:": "关键指标：",
-        "Fee-aware rules:": "费用敏感规则：",
-        "5-day return:": "5日收益率：",
-        "20-day return:": "20日收益率：",
-        "MA5 / MA20 / MA60:": "MA5 / MA20 / MA60：",
-        "ATR14 pct:": "ATR14占比：",
-        "Volume ratio 5/20:": "5日/20日成交量比：",
-        "20-day drawdown:": "20日回撤：",
-        "Entry trigger:": "入场触发：",
-        "Stop loss:": "止损：",
-        "Take profit:": "止盈：",
-        "Trailing stop:": "跟踪止损：",
-        "Round-trip fee drag:": "双边费用拖累：",
-        "Minimum order value for about 30 bps fee drag:": "约30bp费用拖累对应的最低订单金额：",
-        "Rule text:": "规则说明：",
-        "Research rule: consider entry only if the candidate still passes the score threshold and price breaks": "研究规则：仅当候选仍通过分数阈值且价格突破",
-        "above the signal close; stop loss at": "高于信号收盘价时考虑入场；止损设在成交价下方",
-        "below fill; take profit around": "；止盈约为",
-        "or use a": "，或使用",
-        "trailing stop after profit; skip trades below the minimum-fee-friendly order value.": "跟踪止损保护盈利；低于最低费用友好金额的交易跳过。",
-        "entry_candidate": "可入场候选",
-        "watch_only": "观察",
-        "skip": "跳过",
-        **NOTE_TRANSLATIONS,
-        **NEWS_TRANSLATIONS,
-    }
-    for source, target in replacements.items():
-        localized = localized.replace(source, target)
-    return localized
-
-
-def localize_dashboard_report_content(content: str) -> str:
-    return _localize_report_content(content)
-
-
-def _daily_preview(content: str) -> str:
-    if not content.strip():
-        return "暂无研究日报内容"
-    lines = [
-        line.strip("#> -")
-        for line in _localize_report_content(content).splitlines()
-        if line.strip() and not line.lstrip().startswith("|")
-    ]
-    return "；".join(lines[:3]) if lines else "研究日报已生成"
-
-
-def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8-sig") if path.exists() else ""
-
-
-def read_dashboard_daily_report(path: str | Path) -> dict[str, Any]:
-    daily_path = Path(path)
-    content = _read_text(daily_path)
-    if _is_meaningful_report(content):
-        return {
-            "path": str(daily_path),
-            "requested_path": str(daily_path),
-            "exists": True,
-            "used_fallback": False,
-            "content": content,
-        }
-
-    fallback_path, fallback_content = _find_report_fallback(daily_path)
-    if fallback_path is not None:
-        return {
-            "path": str(fallback_path),
-            "requested_path": str(daily_path),
-            "exists": True,
-            "used_fallback": fallback_path != daily_path,
-            "content": fallback_content,
-        }
-
-    return {
-        "path": str(daily_path),
-        "requested_path": str(daily_path),
-        "exists": daily_path.exists(),
-        "used_fallback": False,
-        "content": content,
-    }
-
-
-def _is_meaningful_report(content: str) -> bool:
-    text = content.strip()
-    return len(text) >= 10 and any(char.isalnum() for char in text)
-
-
-def _find_report_fallback(daily_path: Path) -> tuple[Path, str] | tuple[None, str]:
-    candidates: list[Path] = []
-    for name in ("research_report.md", "generated_stock_report.md", "stock_screen_report.md"):
-        candidates.append(daily_path.with_name(name))
-    if daily_path.parent.exists():
-        candidates.extend(
-            sorted(
-                daily_path.parent.glob("*report*.md"),
-                key=lambda item: item.stat().st_mtime if item.exists() else 0,
-                reverse=True,
-            )
-        )
-
-    seen: set[Path] = set()
-    for candidate in candidates:
-        if candidate in seen or candidate == daily_path or not candidate.exists():
-            continue
-        seen.add(candidate)
-        content = _read_text(candidate)
-        if _is_meaningful_report(content):
-            return candidate, content
-    return None, ""
-
-
-def _mtime_iso(path: Path) -> str:
-    if not path.exists():
-        return ""
-    return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
-
-
-def _format_datetime(value: str) -> str:
-    try:
-        return datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return value
-
-
-def _date_label(value: str) -> str:
-    try:
-        return datetime.fromisoformat(value).strftime("%Y-%m-%d")
-    except ValueError:
-        return value[:10] if value else ""
-
-
-def _to_float(value: Any) -> float:
-    try:
-        return float(value or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _ratio(numerator: float, denominator: float) -> float:
-    return numerator / denominator if denominator else 0.0
-
-
-def _looks_ascii_text(value: str) -> bool:
-    text = value.strip()
-    return bool(text) and all(ord(char) < 128 for char in text)
-
-
-def _json_for_script(value: dict[str, Any]) -> str:
-    return (
-        json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        .replace("</", "<\\/")
-        .replace("\u2028", "\\u2028")
-        .replace("\u2029", "\\u2029")
-    )
-
-
-HTML_TEMPLATE = r"""<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>海通量化运营看板 - 专业交易终端</title>
   <style>
-__DASHBOARD_STYLE__
-  </style>
-</head>
-<body>
-<div class="app-shell">
-  <!-- 侧边栏导航 -->
-  <aside class="sidebar">
-    <div class="sidebar-brand">
-      <div class="logo">
-        <svg viewBox="0 0 36 36">
-          <circle cx="18" cy="18" r="16" fill="url(#brand-grad)" />
-          <path d="M11 18l5 5 10-10" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
-          <defs>
-            <linearGradient id="brand-grad" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stop-color="#3b82f6" />
-              <stop offset="100%" stop-color="#1d4ed8" />
-            </linearGradient>
-          </defs>
-        </svg>
-      </div>
-      <div class="brand-text">
-        <h2>海通量化运营</h2>
-        <span>只读研究看板</span>
-      </div>
-    </div>
-    
-    <nav class="sidebar-nav">
-      <a href="javascript:void(0)" class="nav-item active" data-tab="overview">
-        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-        <span>候选看板</span>
-      </a>
-      <a href="javascript:void(0)" class="nav-item" data-tab="triggers">
-        <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-        <span>触发价格</span>
-      </a>
-      <a href="javascript:void(0)" class="nav-item" data-tab="risks">
-        <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        <span>风险复盘</span>
-      </a>
-      <a href="javascript:void(0)" class="nav-item" data-tab="report">
-        <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-        <span>日报原文</span>
-      </a>
-      <div class="nav-separator">其他研究模块</div>
-      <a href="javascript:void(0)" class="nav-item lock-item" data-toast="持仓概览">
-        <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
-        <span>持仓概览</span>
-      </a>
-      <a href="javascript:void(0)" class="nav-item lock-item" data-toast="组合监控">
-        <svg viewBox="0 0 24 24"><path d="M21.21 15.89A10 10 0 1 1 8 2.83M22 12A10 10 0 0 0 12 2v10z"/></svg>
-        <span>组合监控</span>
-      </a>
-      <a href="javascript:void(0)" class="nav-item lock-item" data-toast="绩效分析">
-        <svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
-        <span>绩效分析</span>
-      </a>
-      <a href="javascript:void(0)" class="nav-item lock-item" data-toast="因子监控">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M16.2 7.8l-2 2-2.8-2.8-3.6 3.6"/></svg>
-        <span>因子监控</span>
-      </a>
-      <a href="javascript:void(0)" class="nav-item lock-item" data-toast="数据中心">
-        <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 11v6c0 1.66 4 3 9 3s9-1.34 9-3v-6"/></svg>
-        <span>数据中心</span>
-      </a>
-      <a href="javascript:void(0)" class="nav-item lock-item" data-toast="系统设置">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        <span>系统设置</span>
-      </a>
-    </nav>
-    
-    <div class="sidebar-footer">
-      <span>不构成投资建议</span>
-    </div>
-  </aside>
 
-  <!-- 主操作区 -->
-  <div class="main-wrapper">
-    <!-- 顶部指数与元信息栏 -->
-    <header class="topbar">
-      <div style="display: flex; align-items: center; gap: 16px;">
-        <button class="sidebar-toggle-btn" id="sidebarToggle" title="收起/展开导航栏">
-          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-        </button>
-        <div class="index-ticker">
-        <div class="index-card">
-          <span class="idx-name">沪深300</span>
-          <span class="idx-val down">3,643.21</span>
-          <span class="idx-pct down">-0.42%</span>
-        </div>
-        <div class="index-card">
-          <span class="idx-name">中证500</span>
-          <span class="idx-val down">5,305.18</span>
-          <span class="idx-pct down">-0.18%</span>
-        </div>
-        <div class="index-card">
-          <span class="idx-name">创业板指</span>
-          <span class="idx-val down">1,807.63</span>
-          <span class="idx-pct down">-0.67%</span>
-        </div>
-        <div class="index-card hide-mobile">
-          <span class="idx-name">A股成交额</span>
-          <span class="idx-val bold">8,742亿</span>
-        </div>
-      </div></div>
-      
-      <div class="top-meta">
-        <div class="mode-switch-group single-mode" aria-label="数据模式">
-          <button type="button" class="mode-switch-btn active" id="btnRealMode" onclick="setDataSource('real')">系统数据</button>
-        </div>
-        <div class="weather-meta">
-          <svg class="sun-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
-          <span id="dateStr">2025-05-20 (周二)</span>
-        </div>
-        <div class="time-meta">
-          <span class="time-label">数据截至</span>
-          <span class="time-val" id="timeStr">15:00:00</span>
-        </div>
-      </div>
-    </header>
-
-    <!-- KPI 卡片网格 -->
-    <section class="kpi-grid">
-      <div class="kpi-card">
-        <div class="kpi-title">候选池数量</div>
-        <div class="kpi-value-row">
-          <span class="kpi-number" id="metricCandidates">68</span>
-          <span class="kpi-unit">只</span>
-        </div>
-        <div class="kpi-trend">较昨日 <span class="trend-up" id="kpiPoolChange">+6 只</span></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">可入场数量</div>
-        <div class="kpi-value-row">
-          <span class="kpi-number text-green" id="metricEntries">14</span>
-          <span class="kpi-unit">只</span>
-        </div>
-        <div class="kpi-trend">占比 <span class="trend-percent text-green" id="kpiEntryRatio">20.59%</span></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">观察中数量</div>
-        <div class="kpi-value-row">
-          <span class="kpi-number text-orange" id="metricWatch">28</span>
-          <span class="kpi-unit">只</span>
-        </div>
-        <div class="kpi-trend">占比 <span class="trend-percent text-orange" id="kpiWatchRatio">41.18%</span></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">跳过数量</div>
-        <div class="kpi-value-row">
-          <span class="kpi-number text-muted" id="metricSkip">26</span>
-          <span class="kpi-unit">只</span>
-        </div>
-        <div class="kpi-trend">占比 <span class="trend-percent text-muted" id="kpiSkipRatio">38.24%</span></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">今日触发数量</div>
-        <div class="kpi-value-row">
-          <span class="kpi-number text-red" id="metricTodayTrigger">7</span>
-          <span class="kpi-unit">只</span>
-        </div>
-        <div class="kpi-trend">较昨日 <span class="trend-up text-red" id="kpiTodayTriggerChange">+2 只</span></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">风险预警数量</div>
-        <div class="kpi-value-row">
-          <span class="kpi-number text-red" id="metricRisks">5</span>
-          <span class="kpi-unit">只</span>
-        </div>
-        <div class="kpi-trend">较昨日 <span class="trend-up text-red" id="kpiRisksChange">+1 只</span></div>
-      </div>
-      <div class="kpi-card kpi-card-double">
-        <div class="kpi-title">
-          <span>纸面账户总资产</span>
-          <button class="eye-btn" onclick="toggleAssetPrivacy()" title="资产隐私切换">
-            <svg id="eyeOpen" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-            <svg id="eyeClosed" viewBox="0 0 24 24" style="display:none;"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-          </button>
-        </div>
-        <div class="kpi-value-row">
-          <span class="kpi-number asset-font" id="assetVal">12,568,327.42</span>
-        </div>
-        <div class="kpi-trend">今日 <span class="trend-down" id="assetChange">-0.42%</span></div>
-      </div>
-    </section>
-
-    <!-- 告警横条堆栈 -->
-    <div class="notice-stack-area" id="noticeStack"></div>
-
-    <!-- 工作台双栏布局 -->
-    <div class="workspace-grid">
-      <!-- 左侧数据表格与多模式 -->
-      <section class="table-card">
-        <!-- 搜索与筛选工具栏 -->
-        <div class="table-toolbar">
-          <div class="status-tab-group" id="statusFilterTabs">
-            <!-- 动态生成状态筛选按钮 -->
-          </div>
-          
-          <div class="toolbar-right">
-            <div class="search-box-wrap">
-              <svg class="search-svg" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-              <input type="search" id="searchInput" placeholder="搜索代码或名称...">
-            </div>
-            
-            <button class="btn-refresh" id="refreshButton">
-              <svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-              <span>刷新</span>
-            </button>
-            <div class="polling-controls" aria-label="自动刷新设置">
-              <label class="poll-switch">
-                <input type="checkbox" id="autoRefreshToggle">
-                <span class="poll-slider"></span>
-                <span>自动刷新</span>
-              </label>
-              <label class="poll-interval">
-                <span>轮询间隔</span>
-                <input type="number" id="pollIntervalInput" min="5" step="5" inputmode="numeric">
-                <span>秒</span>
-              </label>
-              <div class="poll-status" aria-live="polite">
-                <span id="lastRefreshText">最后刷新：尚未刷新</span>
-                <span id="nextRefreshText">下次刷新：未开启</span>
-                <span id="priceSourceText">行情来源：待刷新</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 列表容器：候选看板 (Tab: overview) -->
-        <div class="view-panel active" id="panel-overview">
-          <div class="table-overflow-wrapper">
-            <table class="quant-table">
-              <thead>
-                <tr>
-                  <th width="30"><input type="checkbox" id="chkSelectAll"></th>
-                  <th width="40">⭐</th>
-                  <th>代码</th>
-                  <th>名称</th>
-                  <th>跟踪指数</th>
-                  <th>状态</th>
-                  <th title="这是交易计划生成的固定风控价位，不随实时行情自动漂移。">计划触发价(元)</th>
-                  <th>最新价(元)</th>
-                  <th>涨跌幅(%)</th>
-                  <th>触发信号</th>
-                  <th>风险等级</th>
-                  <th>操作日期</th>
-                </tr>
-              </thead>
-              <tbody id="candidateTable">
-                <!-- 由 JavaScript 动态填充 -->
-              </tbody>
-            </table>
-          </div>
-          
-          <!-- 分页器组件 -->
-          <div class="pagination-container">
-            <span class="total-indicator" id="visibleCount">共 68 条</span>
-            <div class="pager-navigation">
-              <button class="pager-btn" id="prevPageBtn" onclick="changePage(-1)">&lt;</button>
-              <div class="pager-numbers" id="pagerNumbers"></div>
-              <button class="pager-btn" id="nextPageBtn" onclick="changePage(1)">&gt;</button>
-            </div>
-            <div class="pager-size-box">
-              <select id="pageSizeSelect" onchange="changePageSize(this.value)">
-                <option value="10">10 条/页</option>
-                <option value="20">20 条/页</option>
-                <option value="50">50 条/页</option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        <!-- 列表容器：触发价格 (Tab: triggers) -->
-        <div class="view-panel" id="panel-triggers">
-          <div class="trigger-card-grid" id="triggerList"></div>
-        </div>
-
-        <!-- 列表容器：风险复盘 (Tab: risks) -->
-        <div class="view-panel" id="panel-risks">
-          <div class="paper-summary-card" id="paperSummary"></div>
-          <div class="risk-card-grid" id="riskList"></div>
-        </div>
-
-        <!-- 列表容器：日报原文 (Tab: report) -->
-        <div class="view-panel" id="panel-report">
-          <div class="report-edit-container">
-            <div class="report-actions" style="margin-bottom: 12px; justify-content: flex-start;">
-              <button class="btn-cancel-report" id="btnRefreshReport" onclick="refreshDailyReportFromServer()">刷新日报</button>
-              <button class="btn-cancel-report" id="btnEditReport" onclick="enterReportEditMode()">✏️ 在线编辑日报</button>
-            </div>
-            <article class="report-markdown-body" id="dailyReport"></article>
-            <div id="dailyReportEditorWrapper" style="display:none; width: 100%;">
-              <textarea class="report-editor-textarea" id="dailyReportEditorField" placeholder="请在这里编写或者修改日报Markdown内容..."></textarea>
-              <div class="report-actions" style="margin-top: 12px;">
-                <button class="btn-cancel-report" onclick="exitReportEditMode()">取消</button>
-                <button class="btn-save-report" onclick="saveDailyReportToServer()">💾 保存并发布</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 右侧 ETF 详细参数抽屉 -->
-      <aside class="detail-card">
-        <div class="detail-empty-placeholder" id="detailEmpty">
-          <svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
-          <p>请点击左侧列表行以在此处加载全维量化数据及价格区间标尺。</p>
-        </div>
-        
-        <div class="detail-container" id="detailContent" style="display:none;">
-          <div class="detail-header">
-            <div class="detail-header-left">
-              <div class="detail-name-row">
-                <span class="det-symbol" id="detSymbol">510300</span>
-                <span class="det-name" id="detName">沪深300ETF</span>
-                <button class="det-star" onclick="toggleStarSelectedSymbol()" id="detStarBtn">⭐</button>
-              </div>
-              <span class="det-sub" id="detSubtitle">跟踪指数：沪深300</span>
-            </div>
-            <span class="det-status-badge badge-green" id="detStatusBadge">可入场</span>
-          </div>
-
-          <!-- 子选项卡 -->
-          <nav class="detail-subtabs">
-            <button class="det-tab-btn active" data-dtab="summary">概览</button>
-            <button class="det-tab-btn" data-dtab="signals">触发与信号</button>
-            <button class="det-tab-btn" data-dtab="risks">风险评估</button>
-            <button class="det-tab-btn" data-dtab="history">参数矩阵</button>
-            <button class="det-tab-btn" data-dtab="sandbox">决策沙盒</button>
-          </nav>
-
-          <!-- Tab 1: 概览 -->
-          <div class="det-tab-panel active" id="dpanel-summary">
-            <!-- 核心参数 -->
-            <div class="det-section">
-              <h4 class="det-sec-title">核心信息</h4>
-              <div class="det-metrics-layout">
-                <div class="det-metric-box"><span>跟踪指数</span><strong id="detIndex">沪深300</strong></div>
-                <div class="det-metric-box"><span>IOPV (元)</span><strong id="detIopv">3.874</strong></div>
-                <div class="det-metric-box"><span>最新价 (元)</span><strong id="detLatestPrice">3.876</strong></div>
-                <div class="det-metric-box"><span>溢折率 (%)</span><strong class="color-red" id="detDiscount">0.05</strong></div>
-                <div class="det-metric-box"><span>涨跌幅 (%)</span><strong class="color-green" id="detChange">-0.49</strong></div>
-                <div class="det-metric-box"><span>成交额 (万元)</span><strong id="detTurnover">256,387.76</strong></div>
-              </div>
-            </div>
-
-            <!-- 价格趋势 -->
-            <div class="det-section">
-              <div class="det-sec-header">
-                <h4 class="det-sec-title">价格趋势</h4>
-                <button type="button" class="mini-refresh-btn" id="detTrendRefreshBtn" onclick="refreshSelectedTrend()">刷新趋势</button>
-              </div>
-              <div class="trend-summary-grid">
-                <div><span>实时/最近价</span><strong id="trendLatestPrice">--</strong></div>
-                <div><span>日涨跌幅</span><strong id="trendChangePct">--</strong></div>
-                <div><span>趋势判断</span><strong id="trendLabel">加载中</strong></div>
-                <div><span>20日收益</span><strong id="trendReturn20">--</strong></div>
-              </div>
-              <div class="trend-chart-shell">
-                <svg viewBox="0 0 360 120" class="trend-chart-svg" aria-label="价格趋势图">
-                  <line x1="0" y1="20" x2="360" y2="20" class="trend-grid-line"/>
-                  <line x1="0" y1="60" x2="360" y2="60" class="trend-grid-line"/>
-                  <line x1="0" y1="100" x2="360" y2="100" class="trend-grid-line"/>
-                  <polyline id="trendSparkline" points="" fill="none"/>
-                </svg>
-              </div>
-              <p class="trend-status" id="trendStatus">输入代码或名称搜索后，这里会显示对应标的的价格趋势。</p>
-            </div>
-
-            <!-- 触发价格区间及标尺 -->
-            <div class="det-section">
-              <div class="det-sec-header">
-                <h4 class="det-sec-title">计划触发价格区间</h4>
-                <span class="det-sec-meta" id="detPriceTime">更新时间：15:00:00</span>
-              </div>
-              <div class="slider-labels">
-                <div><span>下限 (元)</span><strong id="detSliderLower">3.840</strong></div>
-                <div><span>中板 (元)</span><strong id="detSliderMiddle">3.880</strong></div>
-                <div><span>上限 (元)</span><strong id="detSliderUpper">3.920</strong></div>
-              </div>
-              
-              <!-- 精美 SVG 滑动轴 -->
-              <div class="svg-slider-wrapper">
-                <svg viewBox="0 0 380 40" id="sliderSvg">
-                  <rect x="0" y="16" width="380" height="8" rx="4" fill="#e2e8f0"/>
-                  <!-- 安全区 -->
-                  <rect x="0" y="16" width="180" height="8" rx="0" fill="#94a3b8" opacity="0.6"/>
-                  <!-- 触发区 -->
-                  <rect x="180" y="16" width="200" height="8" rx="0" fill="#10b981" opacity="0.6"/>
-                  
-                  <circle cx="2" cy="20" r="3" fill="#64748b"/>
-                  <circle cx="180" cy="20" r="3" fill="#64748b"/>
-                  <circle cx="378" cy="20" r="3" fill="#64748b"/>
-                  
-                  <circle id="sliderPointer" cx="190" cy="20" r="8" fill="#3b82f6" stroke="#fff" stroke-width="2.5"/>
-                </svg>
-              </div>
-              
-              <div class="slider-chart-legend">
-                <span><span class="legend-dot bg-gray"></span>安全区间</span>
-                <span><span class="legend-dot bg-green"></span>触发区间</span>
-                <span><span class="legend-dot bg-blue"></span>当前价</span>
-              </div>
-            </div>
-
-            <!-- 价格执行计划 -->
-            <div class="det-section">
-              <div class="det-sec-header">
-                <h4 class="det-sec-title">价格执行计划</h4>
-                <span class="det-sec-meta">只读研究价位</span>
-              </div>
-              <div class="execution-plan-grid">
-                <div class="execution-plan-card plan-buy">
-                  <span>计划买入价</span>
-                  <strong id="detPlanBuy">0.000</strong>
-                  <small id="detPlanBuyNote">价格上破后才进入候选</small>
-                </div>
-                <div class="execution-plan-card plan-profit">
-                  <span>止盈卖出价</span>
-                  <strong id="detPlanTakeProfit">0.000</strong>
-                  <small id="detPlanProfitNote">触及后复核减仓或退出</small>
-                </div>
-                <div class="execution-plan-card plan-stop">
-                  <span>止损离场价</span>
-                  <strong id="detPlanStopLoss">0.000</strong>
-                  <small id="detPlanStopNote">跌破后按风控复核</small>
-                </div>
-              </div>
-            </div>
-
-            <!-- 触发信号 -->
-            <div class="det-section">
-              <h4 class="det-sec-title">触发信号</h4>
-              <div class="det-signals-group">
-                <div class="det-sig-item"><span>多因子共振信号</span><span class="sig-badge sig-green" id="sigMult">强</span></div>
-                <div class="det-sig-item"><span>估值水平</span><span class="sig-badge sig-orange" id="sigVal">适中</span></div>
-                <div class="det-sig-item"><span>趋势状态</span><span class="sig-badge sig-green" id="sigTrend">向上</span></div>
-                <div class="det-sig-item"><span>资金流向</span><span class="sig-badge sig-green" id="sigFund">净流入</span></div>
-                <div class="det-sig-item"><span>波动率状态</span><span class="sig-badge sig-green" id="sigVol">正常</span></div>
-              </div>
-              <div class="det-score-box">
-                <span class="score-lbl">综合得分 (满分100)</span>
-                <span class="score-val" id="detScore">72</span>
-              </div>
-            </div>
-
-            <!-- 风险评估 -->
-            <div class="det-section">
-              <h4 class="det-sec-title">风险评估</h4>
-              <div class="det-risk-box">
-                <div class="det-sig-item"><span>风险等级</span><span class="sig-badge sig-orange" id="riskLevel">中</span></div>
-                <div class="det-sig-item"><span>最大回撤 (20日)</span><strong class="font-mono" id="riskMdd">-8.35%</strong></div>
-                <div class="det-sig-item"><span>波动率 (20日)</span><strong class="font-mono" id="riskVol">16.42%</strong></div>
-                <div class="det-sig-item"><span>跟踪误差 (年化)</span><strong class="font-mono" id="riskTe">0.45%</strong></div>
-              </div>
-            </div>
-
-            <!-- 相关性 -->
-            <div class="det-section">
-              <h4 class="det-sec-title">相关性 (20日)</h4>
-              <div class="det-corr-list" id="detCorrList">
-                <!-- JavaScript 动态填充 -->
-              </div>
-            </div>
-          </div>
-
-          <!-- Tab 2: 触发与信号 -->
-          <div class="det-tab-panel" id="dpanel-signals">
-            <div class="det-section">
-              <h4 class="det-sec-title">信号机制与细则</h4>
-              <p class="det-desc">触发价格是量化策略生成的预置单条件。当在操作窗口内价格进入触发区间时，将由策略模块自动决策是否生成交易信号。</p>
-              <div class="tag-section">
-                <h5>优势规则特征：</h5>
-                <div class="tag-flex-wrapper" id="detAdvList"></div>
-              </div>
-              <div class="tag-section" style="margin-top:14px;">
-                <h5>风险预警因素：</h5>
-                <div class="tag-flex-wrapper" id="detRiskList"></div>
-              </div>
-            </div>
-            <div class="det-section">
-              <h4 class="det-sec-title">舆情与新闻研判</h4>
-              <div class="news-bubble-content" id="detNewsSummary">暂无相关舆情输入。</div>
-            </div>
-          </div>
-
-          <!-- Tab 3: 风险评估 -->
-          <div class="det-tab-panel" id="dpanel-risks">
-            <div class="det-section">
-              <h4 class="det-sec-title">深度风险测算数据</h4>
-              <table class="det-metrics-table">
-                <tr><td>止损波动空间</td><td class="font-mono text-right" id="detStopGap">0.00%</td></tr>
-                <tr><td>预计收益空间</td><td class="font-mono text-right" id="detProfitGap">0.00%</td></tr>
-                <tr><td>盈亏风险比 (R/R)</td><td class="font-mono text-right font-bold" id="detRrRatio">0.00</td></tr>
-                <tr><td>假定交易金额</td><td class="font-mono text-right" id="detOrderVal">￥0.00</td></tr>
-                <tr><td>双边交易费 drag</td><td class="font-mono text-right" id="detFeeDrag">￥0.00</td></tr>
-              </table>
-            </div>
-            <div class="det-section">
-              <h4 class="det-sec-title">极端压力测试 (情景损益)</h4>
-              <p class="det-desc">利用历史 250 天数据 and 压力发生器预测该标的在极端宏观事件下的受损概率：</p>
-              <table class="det-metrics-table">
-                <tr><td>国内政策利率突升 50bps</td><td class="font-mono text-right text-green">-1.24%</td></tr>
-                <tr><td>系统性大盘暴跌 5%</td><td class="font-mono text-right text-green">-4.68%</td></tr>
-                <tr><td>集中度硬性限额超阈值</td><td class="font-mono text-right text-red">正常无警报</td></tr>
-              </table>
-            </div>
-          </div>
-
-          <!-- Tab 4: 历史表现 (参数优化高原热力图) -->
-          <div class="det-tab-panel" id="dpanel-history">
-            <div class="det-section">
-              <h4 class="det-sec-title">阶段区间收益测算</h4>
-              <table class="det-metrics-table">
-                <thead>
-                  <tr><th>分析周期</th><th class="text-right">累积收益</th><th class="text-right">超额收益</th></tr>
-                </thead>
-                <tbody>
-                  <tr><td>近 1 周</td><td class="font-mono text-right text-red">+1.24%</td><td class="font-mono text-right text-red">+0.12%</td></tr>
-                  <tr><td>近 1 月</td><td class="font-mono text-right text-red">+3.86%</td><td class="font-mono text-right text-green">-0.45%</td></tr>
-                  <tr><td>近 3 月</td><td class="font-mono text-right text-green">-2.14%</td><td class="font-mono text-right text-red">+1.08%</td></tr>
-                  <tr><td>今年以来 (YTD)</td><td class="font-mono text-right text-red">+8.92%</td><td class="font-mono text-right text-red">+2.34%</td></tr>
-                </tbody>
-              </table>
-            </div>
-            <div class="det-section">
-              <h4 class="det-sec-title">滚动参数组合优化矩阵热力图</h4>
-              <p class="det-desc">不同 <b>参数滚动窗口 (Days)</b> 与 <b>持仓标的数 (Top N)</b> 交织回测出的夏普比率高原表现：</p>
-              <table class="heatmap-table">
-                <thead>
-                  <tr>
-                    <th>Top N \ Days</th>
-                    <th>10天</th>
-                    <th>20天</th>
-                    <th>40天</th>
-                    <th>60天</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td class="font-bold">Top 1</td>
-                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 85%); color: #065f46;" title="Sharpe: 1.24 (20日)">1.24</td>
-                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 70%); color: #065f46;" title="Sharpe: 1.86 (20日)">1.86</td>
-                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 75%); color: #065f46;" title="Sharpe: 1.62 (20日)">1.62</td>
-                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 80%); color: #9a3412;" title="Sharpe: 0.95 (20日)">0.95</td>
-                  </tr>
-                  <tr>
-                    <td class="font-bold">Top 2</td>
-                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 78%); color: #065f46;" title="Sharpe: 1.45 (20日)">1.45</td>
-                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 65%); color: #065f46;" title="Sharpe: 2.11 (20日) - 参数高原核心">2.11</td>
-                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 72%); color: #065f46;" title="Sharpe: 1.78 (20日)">1.78</td>
-                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 75%); color: #9a3412;" title="Sharpe: 0.84 (20日)">0.84</td>
-                  </tr>
-                  <tr>
-                    <td class="font-bold">Top 3</td>
-                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 82%); color: #065f46;" title="Sharpe: 1.32 (20日)">1.32</td>
-                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 68%); color: #065f46;" title="Sharpe: 1.98 (20日)">1.98</td>
-                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 76%); color: #065f46;" title="Sharpe: 1.58 (20日)">1.58</td>
-                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 78%); color: #9a3412;" title="Sharpe: 0.89 (20日)">0.89</td>
-                  </tr>
-                  <tr>
-                    <td class="font-bold">Top 5</td>
-                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 85%); color: #9a3412;" title="Sharpe: 1.05 (20日)">1.05</td>
-                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 78%); color: #065f46;" title="Sharpe: 1.48 (20日)">1.48</td>
-                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 82%); color: #065f46;" title="Sharpe: 1.35 (20日)">1.35</td>
-                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 82%); color: #9a3412;" title="Sharpe: 0.72 (20日)">0.72</td>
-                  </tr>
-                </tbody>
-              </table>
-              <div class="slider-chart-legend" style="margin-top: 10px;">
-                <span><span class="legend-dot" style="background-color: hsl(140, 75%, 65%)"></span>高夏普比率 (&gt;1.8)</span>
-                <span><span class="legend-dot" style="background-color: hsl(140, 75%, 80%)"></span>中性稳定区间 (1.0-1.8)</span>
-                <span><span class="legend-dot" style="background-color: hsl(35, 75%, 75%)"></span>风险孤岛 (&lt;1.0)</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Tab 5: 决策沙盒 -->
-          <div class="det-tab-panel" id="dpanel-sandbox">
-            <div class="det-section" style="padding-bottom: 30px;">
-              <h4 class="det-sec-title">交易决策与风控推演沙盒</h4>
-              <p class="det-desc">快捷买入构建虚拟配比，实时风控算力在客户端进行两两 Pearson 共振检查，规避高同质暴露：</p>
-              
-              <button class="sandbox-add-btn" onclick="addCurrentSymbolToSandbox()">📥 将当前标的加入沙盒</button>
-              
-              <div id="sandboxList">
-                <!-- 由 JavaScript 动态填充 -->
-              </div>
-              
-              <div id="sandboxAlertArea">
-                <!-- 动态 Pearson 集中度警报 -->
-              </div>
-            </div>
-          </div>
-        </div>
-      </aside>
-    </div>
-  </div>
-</div>
-
-<!-- 弹出提示框挂载点 -->
-<div class="toast-stack" id="toastStack"></div>
-
-<script type="application/json" id="dashboard-data">__DASHBOARD_DATA__</script>
-<script>
-__DASHBOARD_SCRIPT__
-</script>
-</body>
-</html>
-"""
-
-DASHBOARD_STYLE = r"""
 :root {
   color-scheme: light;
   --bg-dark-sidebar: #0f172a;
@@ -3190,9 +1920,612 @@ body {
   50% { opacity: 1; box-shadow: 0 0 8px rgba(239, 68, 68, 0.15); }
   100% { opacity: 0.95; }
 }
-"""
 
-DASHBOARD_SCRIPT = r"""
+  </style>
+</head>
+<body>
+<div class="app-shell">
+  <!-- 侧边栏导航 -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="logo">
+        <svg viewBox="0 0 36 36">
+          <circle cx="18" cy="18" r="16" fill="url(#brand-grad)" />
+          <path d="M11 18l5 5 10-10" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+          <defs>
+            <linearGradient id="brand-grad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#3b82f6" />
+              <stop offset="100%" stop-color="#1d4ed8" />
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h2>海通量化运营</h2>
+        <span>只读研究看板</span>
+      </div>
+    </div>
+    
+    <nav class="sidebar-nav">
+      <a href="javascript:void(0)" class="nav-item active" data-tab="overview">
+        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+        <span>候选看板</span>
+      </a>
+      <a href="javascript:void(0)" class="nav-item" data-tab="triggers">
+        <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        <span>触发价格</span>
+      </a>
+      <a href="javascript:void(0)" class="nav-item" data-tab="risks">
+        <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <span>风险复盘</span>
+      </a>
+      <a href="javascript:void(0)" class="nav-item" data-tab="report">
+        <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <span>日报原文</span>
+      </a>
+      <div class="nav-separator">其他研究模块</div>
+      <a href="javascript:void(0)" class="nav-item lock-item" data-toast="持仓概览">
+        <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+        <span>持仓概览</span>
+      </a>
+      <a href="javascript:void(0)" class="nav-item lock-item" data-toast="组合监控">
+        <svg viewBox="0 0 24 24"><path d="M21.21 15.89A10 10 0 1 1 8 2.83M22 12A10 10 0 0 0 12 2v10z"/></svg>
+        <span>组合监控</span>
+      </a>
+      <a href="javascript:void(0)" class="nav-item lock-item" data-toast="绩效分析">
+        <svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+        <span>绩效分析</span>
+      </a>
+      <a href="javascript:void(0)" class="nav-item lock-item" data-toast="因子监控">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M16.2 7.8l-2 2-2.8-2.8-3.6 3.6"/></svg>
+        <span>因子监控</span>
+      </a>
+      <a href="javascript:void(0)" class="nav-item lock-item" data-toast="数据中心">
+        <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 11v6c0 1.66 4 3 9 3s9-1.34 9-3v-6"/></svg>
+        <span>数据中心</span>
+      </a>
+      <a href="javascript:void(0)" class="nav-item lock-item" data-toast="系统设置">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>系统设置</span>
+      </a>
+    </nav>
+    
+    <div class="sidebar-footer">
+      <span>不构成投资建议</span>
+    </div>
+  </aside>
+
+  <!-- 主操作区 -->
+  <div class="main-wrapper">
+    <!-- 顶部指数与元信息栏 -->
+    <header class="topbar">
+      <div style="display: flex; align-items: center; gap: 16px;">
+        <button class="sidebar-toggle-btn" id="sidebarToggle" title="收起/展开导航栏">
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <div class="index-ticker">
+        <div class="index-card">
+          <span class="idx-name">沪深300</span>
+          <span class="idx-val down">3,643.21</span>
+          <span class="idx-pct down">-0.42%</span>
+        </div>
+        <div class="index-card">
+          <span class="idx-name">中证500</span>
+          <span class="idx-val down">5,305.18</span>
+          <span class="idx-pct down">-0.18%</span>
+        </div>
+        <div class="index-card">
+          <span class="idx-name">创业板指</span>
+          <span class="idx-val down">1,807.63</span>
+          <span class="idx-pct down">-0.67%</span>
+        </div>
+        <div class="index-card hide-mobile">
+          <span class="idx-name">A股成交额</span>
+          <span class="idx-val bold">8,742亿</span>
+        </div>
+      </div></div>
+      
+      <div class="top-meta">
+        <div class="mode-switch-group single-mode" aria-label="数据模式">
+          <button type="button" class="mode-switch-btn active" id="btnRealMode" onclick="setDataSource('real')">系统数据</button>
+        </div>
+        <div class="weather-meta">
+          <svg class="sun-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          <span id="dateStr">2025-05-20 (周二)</span>
+        </div>
+        <div class="time-meta">
+          <span class="time-label">数据截至</span>
+          <span class="time-val" id="timeStr">15:00:00</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- KPI 卡片网格 -->
+    <section class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-title">候选池数量</div>
+        <div class="kpi-value-row">
+          <span class="kpi-number" id="metricCandidates">68</span>
+          <span class="kpi-unit">只</span>
+        </div>
+        <div class="kpi-trend">较昨日 <span class="trend-up" id="kpiPoolChange">+6 只</span></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">可入场数量</div>
+        <div class="kpi-value-row">
+          <span class="kpi-number text-green" id="metricEntries">14</span>
+          <span class="kpi-unit">只</span>
+        </div>
+        <div class="kpi-trend">占比 <span class="trend-percent text-green" id="kpiEntryRatio">20.59%</span></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">观察中数量</div>
+        <div class="kpi-value-row">
+          <span class="kpi-number text-orange" id="metricWatch">28</span>
+          <span class="kpi-unit">只</span>
+        </div>
+        <div class="kpi-trend">占比 <span class="trend-percent text-orange" id="kpiWatchRatio">41.18%</span></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">跳过数量</div>
+        <div class="kpi-value-row">
+          <span class="kpi-number text-muted" id="metricSkip">26</span>
+          <span class="kpi-unit">只</span>
+        </div>
+        <div class="kpi-trend">占比 <span class="trend-percent text-muted" id="kpiSkipRatio">38.24%</span></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">今日触发数量</div>
+        <div class="kpi-value-row">
+          <span class="kpi-number text-red" id="metricTodayTrigger">7</span>
+          <span class="kpi-unit">只</span>
+        </div>
+        <div class="kpi-trend">较昨日 <span class="trend-up text-red" id="kpiTodayTriggerChange">+2 只</span></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">风险预警数量</div>
+        <div class="kpi-value-row">
+          <span class="kpi-number text-red" id="metricRisks">5</span>
+          <span class="kpi-unit">只</span>
+        </div>
+        <div class="kpi-trend">较昨日 <span class="trend-up text-red" id="kpiRisksChange">+1 只</span></div>
+      </div>
+      <div class="kpi-card kpi-card-double">
+        <div class="kpi-title">
+          <span>纸面账户总资产</span>
+          <button class="eye-btn" onclick="toggleAssetPrivacy()" title="资产隐私切换">
+            <svg id="eyeOpen" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg id="eyeClosed" viewBox="0 0 24 24" style="display:none;"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+        <div class="kpi-value-row">
+          <span class="kpi-number asset-font" id="assetVal">12,568,327.42</span>
+        </div>
+        <div class="kpi-trend">今日 <span class="trend-down" id="assetChange">-0.42%</span></div>
+      </div>
+    </section>
+
+    <!-- 告警横条堆栈 -->
+    <div class="notice-stack-area" id="noticeStack"></div>
+
+    <!-- 工作台双栏布局 -->
+    <div class="workspace-grid">
+      <!-- 左侧数据表格与多模式 -->
+      <section class="table-card">
+        <!-- 搜索与筛选工具栏 -->
+        <div class="table-toolbar">
+          <div class="status-tab-group" id="statusFilterTabs">
+            <!-- 动态生成状态筛选按钮 -->
+          </div>
+          
+          <div class="toolbar-right">
+            <div class="search-box-wrap">
+              <svg class="search-svg" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input type="search" id="searchInput" placeholder="搜索代码或名称...">
+            </div>
+            
+            <button class="btn-refresh" id="refreshButton">
+              <svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              <span>刷新</span>
+            </button>
+            <div class="polling-controls" aria-label="自动刷新设置">
+              <label class="poll-switch">
+                <input type="checkbox" id="autoRefreshToggle">
+                <span class="poll-slider"></span>
+                <span>自动刷新</span>
+              </label>
+              <label class="poll-interval">
+                <span>轮询间隔</span>
+                <input type="number" id="pollIntervalInput" min="5" step="5" inputmode="numeric">
+                <span>秒</span>
+              </label>
+              <div class="poll-status" aria-live="polite">
+                <span id="lastRefreshText">最后刷新：尚未刷新</span>
+                <span id="nextRefreshText">下次刷新：未开启</span>
+                <span id="priceSourceText">行情来源：待刷新</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 列表容器：候选看板 (Tab: overview) -->
+        <div class="view-panel active" id="panel-overview">
+          <div class="table-overflow-wrapper">
+            <table class="quant-table">
+              <thead>
+                <tr>
+                  <th width="30"><input type="checkbox" id="chkSelectAll"></th>
+                  <th width="40">⭐</th>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>跟踪指数</th>
+                  <th>状态</th>
+                  <th title="这是交易计划生成的固定风控价位，不随实时行情自动漂移。">计划触发价(元)</th>
+                  <th>最新价(元)</th>
+                  <th>涨跌幅(%)</th>
+                  <th>触发信号</th>
+                  <th>风险等级</th>
+                  <th>操作日期</th>
+                </tr>
+              </thead>
+              <tbody id="candidateTable">
+                <!-- 由 JavaScript 动态填充 -->
+              </tbody>
+            </table>
+          </div>
+          
+          <!-- 分页器组件 -->
+          <div class="pagination-container">
+            <span class="total-indicator" id="visibleCount">共 68 条</span>
+            <div class="pager-navigation">
+              <button class="pager-btn" id="prevPageBtn" onclick="changePage(-1)">&lt;</button>
+              <div class="pager-numbers" id="pagerNumbers"></div>
+              <button class="pager-btn" id="nextPageBtn" onclick="changePage(1)">&gt;</button>
+            </div>
+            <div class="pager-size-box">
+              <select id="pageSizeSelect" onchange="changePageSize(this.value)">
+                <option value="10">10 条/页</option>
+                <option value="20">20 条/页</option>
+                <option value="50">50 条/页</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 列表容器：触发价格 (Tab: triggers) -->
+        <div class="view-panel" id="panel-triggers">
+          <div class="trigger-card-grid" id="triggerList"></div>
+        </div>
+
+        <!-- 列表容器：风险复盘 (Tab: risks) -->
+        <div class="view-panel" id="panel-risks">
+          <div class="paper-summary-card" id="paperSummary"></div>
+          <div class="risk-card-grid" id="riskList"></div>
+        </div>
+
+        <!-- 列表容器：日报原文 (Tab: report) -->
+        <div class="view-panel" id="panel-report">
+          <div class="report-edit-container">
+            <div class="report-actions" style="margin-bottom: 12px; justify-content: flex-start;">
+              <button class="btn-cancel-report" id="btnRefreshReport" onclick="refreshDailyReportFromServer()">刷新日报</button>
+              <button class="btn-cancel-report" id="btnEditReport" onclick="enterReportEditMode()">✏️ 在线编辑日报</button>
+            </div>
+            <article class="report-markdown-body" id="dailyReport"></article>
+            <div id="dailyReportEditorWrapper" style="display:none; width: 100%;">
+              <textarea class="report-editor-textarea" id="dailyReportEditorField" placeholder="请在这里编写或者修改日报Markdown内容..."></textarea>
+              <div class="report-actions" style="margin-top: 12px;">
+                <button class="btn-cancel-report" onclick="exitReportEditMode()">取消</button>
+                <button class="btn-save-report" onclick="saveDailyReportToServer()">💾 保存并发布</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 右侧 ETF 详细参数抽屉 -->
+      <aside class="detail-card">
+        <div class="detail-empty-placeholder" id="detailEmpty">
+          <svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+          <p>请点击左侧列表行以在此处加载全维量化数据及价格区间标尺。</p>
+        </div>
+        
+        <div class="detail-container" id="detailContent" style="display:none;">
+          <div class="detail-header">
+            <div class="detail-header-left">
+              <div class="detail-name-row">
+                <span class="det-symbol" id="detSymbol">510300</span>
+                <span class="det-name" id="detName">沪深300ETF</span>
+                <button class="det-star" onclick="toggleStarSelectedSymbol()" id="detStarBtn">⭐</button>
+              </div>
+              <span class="det-sub" id="detSubtitle">跟踪指数：沪深300</span>
+            </div>
+            <span class="det-status-badge badge-green" id="detStatusBadge">可入场</span>
+          </div>
+
+          <!-- 子选项卡 -->
+          <nav class="detail-subtabs">
+            <button class="det-tab-btn active" data-dtab="summary">概览</button>
+            <button class="det-tab-btn" data-dtab="signals">触发与信号</button>
+            <button class="det-tab-btn" data-dtab="risks">风险评估</button>
+            <button class="det-tab-btn" data-dtab="history">参数矩阵</button>
+            <button class="det-tab-btn" data-dtab="sandbox">决策沙盒</button>
+          </nav>
+
+          <!-- Tab 1: 概览 -->
+          <div class="det-tab-panel active" id="dpanel-summary">
+            <!-- 核心参数 -->
+            <div class="det-section">
+              <h4 class="det-sec-title">核心信息</h4>
+              <div class="det-metrics-layout">
+                <div class="det-metric-box"><span>跟踪指数</span><strong id="detIndex">沪深300</strong></div>
+                <div class="det-metric-box"><span>IOPV (元)</span><strong id="detIopv">3.874</strong></div>
+                <div class="det-metric-box"><span>最新价 (元)</span><strong id="detLatestPrice">3.876</strong></div>
+                <div class="det-metric-box"><span>溢折率 (%)</span><strong class="color-red" id="detDiscount">0.05</strong></div>
+                <div class="det-metric-box"><span>涨跌幅 (%)</span><strong class="color-green" id="detChange">-0.49</strong></div>
+                <div class="det-metric-box"><span>成交额 (万元)</span><strong id="detTurnover">256,387.76</strong></div>
+              </div>
+            </div>
+
+            <!-- 价格趋势 -->
+            <div class="det-section">
+              <div class="det-sec-header">
+                <h4 class="det-sec-title">价格趋势</h4>
+                <button type="button" class="mini-refresh-btn" id="detTrendRefreshBtn" onclick="refreshSelectedTrend()">刷新趋势</button>
+              </div>
+              <div class="trend-summary-grid">
+                <div><span>实时/最近价</span><strong id="trendLatestPrice">--</strong></div>
+                <div><span>日涨跌幅</span><strong id="trendChangePct">--</strong></div>
+                <div><span>趋势判断</span><strong id="trendLabel">加载中</strong></div>
+                <div><span>20日收益</span><strong id="trendReturn20">--</strong></div>
+              </div>
+              <div class="trend-chart-shell">
+                <svg viewBox="0 0 360 120" class="trend-chart-svg" aria-label="价格趋势图">
+                  <line x1="0" y1="20" x2="360" y2="20" class="trend-grid-line"/>
+                  <line x1="0" y1="60" x2="360" y2="60" class="trend-grid-line"/>
+                  <line x1="0" y1="100" x2="360" y2="100" class="trend-grid-line"/>
+                  <polyline id="trendSparkline" points="" fill="none"/>
+                </svg>
+              </div>
+              <p class="trend-status" id="trendStatus">输入代码或名称搜索后，这里会显示对应标的的价格趋势。</p>
+            </div>
+
+            <!-- 触发价格区间及标尺 -->
+            <div class="det-section">
+              <div class="det-sec-header">
+                <h4 class="det-sec-title">计划触发价格区间</h4>
+                <span class="det-sec-meta" id="detPriceTime">更新时间：15:00:00</span>
+              </div>
+              <div class="slider-labels">
+                <div><span>下限 (元)</span><strong id="detSliderLower">3.840</strong></div>
+                <div><span>中板 (元)</span><strong id="detSliderMiddle">3.880</strong></div>
+                <div><span>上限 (元)</span><strong id="detSliderUpper">3.920</strong></div>
+              </div>
+              
+              <!-- 精美 SVG 滑动轴 -->
+              <div class="svg-slider-wrapper">
+                <svg viewBox="0 0 380 40" id="sliderSvg">
+                  <rect x="0" y="16" width="380" height="8" rx="4" fill="#e2e8f0"/>
+                  <!-- 安全区 -->
+                  <rect x="0" y="16" width="180" height="8" rx="0" fill="#94a3b8" opacity="0.6"/>
+                  <!-- 触发区 -->
+                  <rect x="180" y="16" width="200" height="8" rx="0" fill="#10b981" opacity="0.6"/>
+                  
+                  <circle cx="2" cy="20" r="3" fill="#64748b"/>
+                  <circle cx="180" cy="20" r="3" fill="#64748b"/>
+                  <circle cx="378" cy="20" r="3" fill="#64748b"/>
+                  
+                  <circle id="sliderPointer" cx="190" cy="20" r="8" fill="#3b82f6" stroke="#fff" stroke-width="2.5"/>
+                </svg>
+              </div>
+              
+              <div class="slider-chart-legend">
+                <span><span class="legend-dot bg-gray"></span>安全区间</span>
+                <span><span class="legend-dot bg-green"></span>触发区间</span>
+                <span><span class="legend-dot bg-blue"></span>当前价</span>
+              </div>
+            </div>
+
+            <!-- 价格执行计划 -->
+            <div class="det-section">
+              <div class="det-sec-header">
+                <h4 class="det-sec-title">价格执行计划</h4>
+                <span class="det-sec-meta">只读研究价位</span>
+              </div>
+              <div class="execution-plan-grid">
+                <div class="execution-plan-card plan-buy">
+                  <span>计划买入价</span>
+                  <strong id="detPlanBuy">0.000</strong>
+                  <small id="detPlanBuyNote">价格上破后才进入候选</small>
+                </div>
+                <div class="execution-plan-card plan-profit">
+                  <span>止盈卖出价</span>
+                  <strong id="detPlanTakeProfit">0.000</strong>
+                  <small id="detPlanProfitNote">触及后复核减仓或退出</small>
+                </div>
+                <div class="execution-plan-card plan-stop">
+                  <span>止损离场价</span>
+                  <strong id="detPlanStopLoss">0.000</strong>
+                  <small id="detPlanStopNote">跌破后按风控复核</small>
+                </div>
+              </div>
+            </div>
+
+            <!-- 触发信号 -->
+            <div class="det-section">
+              <h4 class="det-sec-title">触发信号</h4>
+              <div class="det-signals-group">
+                <div class="det-sig-item"><span>多因子共振信号</span><span class="sig-badge sig-green" id="sigMult">强</span></div>
+                <div class="det-sig-item"><span>估值水平</span><span class="sig-badge sig-orange" id="sigVal">适中</span></div>
+                <div class="det-sig-item"><span>趋势状态</span><span class="sig-badge sig-green" id="sigTrend">向上</span></div>
+                <div class="det-sig-item"><span>资金流向</span><span class="sig-badge sig-green" id="sigFund">净流入</span></div>
+                <div class="det-sig-item"><span>波动率状态</span><span class="sig-badge sig-green" id="sigVol">正常</span></div>
+              </div>
+              <div class="det-score-box">
+                <span class="score-lbl">综合得分 (满分100)</span>
+                <span class="score-val" id="detScore">72</span>
+              </div>
+            </div>
+
+            <!-- 风险评估 -->
+            <div class="det-section">
+              <h4 class="det-sec-title">风险评估</h4>
+              <div class="det-risk-box">
+                <div class="det-sig-item"><span>风险等级</span><span class="sig-badge sig-orange" id="riskLevel">中</span></div>
+                <div class="det-sig-item"><span>最大回撤 (20日)</span><strong class="font-mono" id="riskMdd">-8.35%</strong></div>
+                <div class="det-sig-item"><span>波动率 (20日)</span><strong class="font-mono" id="riskVol">16.42%</strong></div>
+                <div class="det-sig-item"><span>跟踪误差 (年化)</span><strong class="font-mono" id="riskTe">0.45%</strong></div>
+              </div>
+            </div>
+
+            <!-- 相关性 -->
+            <div class="det-section">
+              <h4 class="det-sec-title">相关性 (20日)</h4>
+              <div class="det-corr-list" id="detCorrList">
+                <!-- JavaScript 动态填充 -->
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab 2: 触发与信号 -->
+          <div class="det-tab-panel" id="dpanel-signals">
+            <div class="det-section">
+              <h4 class="det-sec-title">信号机制与细则</h4>
+              <p class="det-desc">触发价格是量化策略生成的预置单条件。当在操作窗口内价格进入触发区间时，将由策略模块自动决策是否生成交易信号。</p>
+              <div class="tag-section">
+                <h5>优势规则特征：</h5>
+                <div class="tag-flex-wrapper" id="detAdvList"></div>
+              </div>
+              <div class="tag-section" style="margin-top:14px;">
+                <h5>风险预警因素：</h5>
+                <div class="tag-flex-wrapper" id="detRiskList"></div>
+              </div>
+            </div>
+            <div class="det-section">
+              <h4 class="det-sec-title">舆情与新闻研判</h4>
+              <div class="news-bubble-content" id="detNewsSummary">暂无相关舆情输入。</div>
+            </div>
+          </div>
+
+          <!-- Tab 3: 风险评估 -->
+          <div class="det-tab-panel" id="dpanel-risks">
+            <div class="det-section">
+              <h4 class="det-sec-title">深度风险测算数据</h4>
+              <table class="det-metrics-table">
+                <tr><td>止损波动空间</td><td class="font-mono text-right" id="detStopGap">0.00%</td></tr>
+                <tr><td>预计收益空间</td><td class="font-mono text-right" id="detProfitGap">0.00%</td></tr>
+                <tr><td>盈亏风险比 (R/R)</td><td class="font-mono text-right font-bold" id="detRrRatio">0.00</td></tr>
+                <tr><td>假定交易金额</td><td class="font-mono text-right" id="detOrderVal">￥0.00</td></tr>
+                <tr><td>双边交易费 drag</td><td class="font-mono text-right" id="detFeeDrag">￥0.00</td></tr>
+              </table>
+            </div>
+            <div class="det-section">
+              <h4 class="det-sec-title">极端压力测试 (情景损益)</h4>
+              <p class="det-desc">利用历史 250 天数据 and 压力发生器预测该标的在极端宏观事件下的受损概率：</p>
+              <table class="det-metrics-table">
+                <tr><td>国内政策利率突升 50bps</td><td class="font-mono text-right text-green">-1.24%</td></tr>
+                <tr><td>系统性大盘暴跌 5%</td><td class="font-mono text-right text-green">-4.68%</td></tr>
+                <tr><td>集中度硬性限额超阈值</td><td class="font-mono text-right text-red">正常无警报</td></tr>
+              </table>
+            </div>
+          </div>
+
+          <!-- Tab 4: 历史表现 (参数优化高原热力图) -->
+          <div class="det-tab-panel" id="dpanel-history">
+            <div class="det-section">
+              <h4 class="det-sec-title">阶段区间收益测算</h4>
+              <table class="det-metrics-table">
+                <thead>
+                  <tr><th>分析周期</th><th class="text-right">累积收益</th><th class="text-right">超额收益</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>近 1 周</td><td class="font-mono text-right text-red">+1.24%</td><td class="font-mono text-right text-red">+0.12%</td></tr>
+                  <tr><td>近 1 月</td><td class="font-mono text-right text-red">+3.86%</td><td class="font-mono text-right text-green">-0.45%</td></tr>
+                  <tr><td>近 3 月</td><td class="font-mono text-right text-green">-2.14%</td><td class="font-mono text-right text-red">+1.08%</td></tr>
+                  <tr><td>今年以来 (YTD)</td><td class="font-mono text-right text-red">+8.92%</td><td class="font-mono text-right text-red">+2.34%</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="det-section">
+              <h4 class="det-sec-title">滚动参数组合优化矩阵热力图</h4>
+              <p class="det-desc">不同 <b>参数滚动窗口 (Days)</b> 与 <b>持仓标的数 (Top N)</b> 交织回测出的夏普比率高原表现：</p>
+              <table class="heatmap-table">
+                <thead>
+                  <tr>
+                    <th>Top N \ Days</th>
+                    <th>10天</th>
+                    <th>20天</th>
+                    <th>40天</th>
+                    <th>60天</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="font-bold">Top 1</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 85%); color: #065f46;" title="Sharpe: 1.24 (20日)">1.24</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 70%); color: #065f46;" title="Sharpe: 1.86 (20日)">1.86</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 75%); color: #065f46;" title="Sharpe: 1.62 (20日)">1.62</td>
+                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 80%); color: #9a3412;" title="Sharpe: 0.95 (20日)">0.95</td>
+                  </tr>
+                  <tr>
+                    <td class="font-bold">Top 2</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 78%); color: #065f46;" title="Sharpe: 1.45 (20日)">1.45</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 65%); color: #065f46;" title="Sharpe: 2.11 (20日) - 参数高原核心">2.11</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 72%); color: #065f46;" title="Sharpe: 1.78 (20日)">1.78</td>
+                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 75%); color: #9a3412;" title="Sharpe: 0.84 (20日)">0.84</td>
+                  </tr>
+                  <tr>
+                    <td class="font-bold">Top 3</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 82%); color: #065f46;" title="Sharpe: 1.32 (20日)">1.32</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 68%); color: #065f46;" title="Sharpe: 1.98 (20日)">1.98</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 76%); color: #065f46;" title="Sharpe: 1.58 (20日)">1.58</td>
+                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 78%); color: #9a3412;" title="Sharpe: 0.89 (20日)">0.89</td>
+                  </tr>
+                  <tr>
+                    <td class="font-bold">Top 5</td>
+                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 85%); color: #9a3412;" title="Sharpe: 1.05 (20日)">1.05</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 78%); color: #065f46;" title="Sharpe: 1.48 (20日)">1.48</td>
+                    <td class="heatmap-cell" style="background-color: hsl(140, 75%, 82%); color: #065f46;" title="Sharpe: 1.35 (20日)">1.35</td>
+                    <td class="heatmap-cell" style="background-color: hsl(35, 75%, 82%); color: #9a3412;" title="Sharpe: 0.72 (20日)">0.72</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="slider-chart-legend" style="margin-top: 10px;">
+                <span><span class="legend-dot" style="background-color: hsl(140, 75%, 65%)"></span>高夏普比率 (&gt;1.8)</span>
+                <span><span class="legend-dot" style="background-color: hsl(140, 75%, 80%)"></span>中性稳定区间 (1.0-1.8)</span>
+                <span><span class="legend-dot" style="background-color: hsl(35, 75%, 75%)"></span>风险孤岛 (&lt;1.0)</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab 5: 决策沙盒 -->
+          <div class="det-tab-panel" id="dpanel-sandbox">
+            <div class="det-section" style="padding-bottom: 30px;">
+              <h4 class="det-sec-title">交易决策与风控推演沙盒</h4>
+              <p class="det-desc">快捷买入构建虚拟配比，实时风控算力在客户端进行两两 Pearson 共振检查，规避高同质暴露：</p>
+              
+              <button class="sandbox-add-btn" onclick="addCurrentSymbolToSandbox()">📥 将当前标的加入沙盒</button>
+              
+              <div id="sandboxList">
+                <!-- 由 JavaScript 动态填充 -->
+              </div>
+              
+              <div id="sandboxAlertArea">
+                <!-- 动态 Pearson 集中度警报 -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<!-- 弹出提示框挂载点 -->
+<div class="toast-stack" id="toastStack"></div>
+
+<script type="application/json" id="dashboard-data">{"generated_at":"2026-06-01T11:28:59","generated_at_label":"2026-06-01 11:28:59","refreshed_at":"2026-06-01T11:28:59","refreshed_at_label":"2026-06-01 11:28:59","polling":{"default_interval_seconds":30,"min_interval_seconds":5},"mode_label":"只读研究模式","source_paths":{"trade_plan":"C:\\Users\\23884\\AppData\\Local\\Temp\\tmpbo7fwev6\\trade_plan.json","daily_report":"C:\\Users\\23884\\AppData\\Local\\Temp\\tmpbo7fwev6\\daily_report.md","daily_report_requested":"C:\\Users\\23884\\AppData\\Local\\Temp\\tmpbo7fwev6\\daily_report.md","config":"C:\\Users\\23884\\Documents\\Codex\\2026-05-29\\goal-github\\configs\\default.json"},"metrics":{"candidate_count":28,"entry_count":2,"watch_count":26,"skip_count":0,"max_score":72.48,"avg_score":5.117500000000001,"top_symbol":"512100","risk_count":30},"candidates":[{"symbol":"512100","name":"中证1000ETF南方","index_name":"中证1000","status":"entry_candidate","status_label":"可入场候选","status_tone":"positive","status_rank":0,"score":72.48,"signal_close":1.28,"plan_signal_close":1.28,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":1.2969,"pre_entry_invalidation_price":1.2181,"stop_loss_price":1.2342,"take_profit_price":1.4098,"trailing_stop_pct":0.035156,"entry_distance_pct":0.013203124999999934,"stop_gap_pct":0.048346055979643754,"profit_gap_pct":0.08705374354229317,"risk_reward":1.8006379585326961,"assumed_order_value":10000.0,"estimated_round_trip_fee":15.0,"news_score":0.0,"news_summary":"未提供已复核新闻分数","news_url":"","short_term_bias_label":"规则偏强","medium_term_bias_label":"规则偏强","advantages":["5日动量为正","20日动量为正","收盘价站上20日均线","中期趋势不弱于长期趋势","近期成交量高于20日均量","缺少新闻输入，仅基于K线筛选"],"risks":["RSI偏高，追价风险抬升","缺少新闻分数，不能视为新闻确认"],"row_id":"candidate-0"},{"symbol":"518880","name":"黄金ETF华安","index_name":"黄金现货","status":"entry_candidate","status_label":"可入场候选","status_tone":"positive","status_rank":0,"score":70.81,"signal_close":4.9,"plan_signal_close":4.9,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":4.949,"pre_entry_invalidation_price":4.704,"stop_loss_price":4.751,"take_profit_price":5.3053,"trailing_stop_pct":0.03,"entry_distance_pct":0.009999999999999894,"stop_gap_pct":0.040008082440897055,"profit_gap_pct":0.07199434229137201,"risk_reward":1.7994949494949541,"assumed_order_value":10000.0,"estimated_round_trip_fee":15.0,"news_score":0.0,"news_summary":"未提供已复核新闻分数","news_url":"","short_term_bias_label":"规则偏强","medium_term_bias_label":"规则偏强","advantages":["5日动量为正","20日动量为正","收盘价站上20日均线","中期趋势不弱于长期趋势","近期成交量高于20日均量","缺少新闻输入，仅基于K线筛选"],"risks":["RSI偏高，追价风险抬升","缺少新闻分数，不能视为新闻确认"],"row_id":"candidate-1"},{"symbol":"510300","name":"沪深300ETF","index_name":"沪深300","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-2","is_config_coverage":true},{"symbol":"510050","name":"上证50ETF","index_name":"上证50","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-3","is_config_coverage":true},{"symbol":"510500","name":"中证500ETF南方","index_name":"中证500","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-4","is_config_coverage":true},{"symbol":"159915","name":"创业板ETF","index_name":"创业板指","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-5","is_config_coverage":true},{"symbol":"159922","name":"中证500ETF","index_name":"中证500","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-6","is_config_coverage":true},{"symbol":"588000","name":"科创50ETF","index_name":"科创50","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-7","is_config_coverage":true},{"symbol":"159601","name":"A50ETF","index_name":"富时中国A50","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-8","is_config_coverage":true},{"symbol":"159919","name":"沪深300ETF华安","index_name":"沪深300","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-9","is_config_coverage":true},{"symbol":"512480","name":"半导体ETF","index_name":"中证半导体","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-10","is_config_coverage":true},{"symbol":"512660","name":"军工ETF","index_name":"中证军工","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-11","is_config_coverage":true},{"symbol":"512010","name":"医药ETF","index_name":"中证医药","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-12","is_config_coverage":true},{"symbol":"159928","name":"消费ETF","index_name":"中证消费","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-13","is_config_coverage":true},{"symbol":"515030","name":"新能源车ETF","index_name":"CS新能车","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-14","is_config_coverage":true},{"symbol":"512690","name":"酒ETF","index_name":"中证白酒","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-15","is_config_coverage":true},{"symbol":"512000","name":"券商ETF","index_name":"中证全指证券","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-16","is_config_coverage":true},{"symbol":"515880","name":"通信ETF","index_name":"中证全指通信","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-17","is_config_coverage":true},{"symbol":"512800","name":"银行ETF","index_name":"中证银行","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-18","is_config_coverage":true},{"symbol":"159869","name":"游戏ETF","index_name":"中证动漫游戏","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-19","is_config_coverage":true},{"symbol":"516160","name":"新能源ETF","index_name":"CS新能源","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-20","is_config_coverage":true},{"symbol":"515790","name":"光伏ETF","index_name":"中证光伏产业","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-21","is_config_coverage":true},{"symbol":"512980","name":"传媒ETF","index_name":"中证传媒","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-22","is_config_coverage":true},{"symbol":"515050","name":"5GETF","index_name":"中证5G通信","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-23","is_config_coverage":true},{"symbol":"159941","name":"纳指ETF","index_name":"纳斯达克100","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-24","is_config_coverage":true},{"symbol":"510880","name":"红利ETF","index_name":"上证红利","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-25","is_config_coverage":true},{"symbol":"512580","name":"环保ETF","index_name":"中证环保","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-26","is_config_coverage":true},{"symbol":"159745","name":"碳中和ETF","index_name":"碳中和","status":"watch_only","status_label":"观察","status_tone":"warning","status_rank":1,"score":0.0,"signal_close":0.0,"plan_signal_close":0.0,"plan_generated_at":"2026-06-01T11:28:59","date":"2026-06-01","entry_price":0.0,"pre_entry_invalidation_price":0.0,"stop_loss_price":0.0,"take_profit_price":0.0,"trailing_stop_pct":0.0,"entry_distance_pct":0.0,"stop_gap_pct":0.0,"profit_gap_pct":0.0,"risk_reward":0.0,"assumed_order_value":0.0,"estimated_round_trip_fee":0.0,"news_score":0.0,"news_summary":"来自配置股票池，尚未进入本次交易计划。","news_url":"","short_term_bias_label":"待计算","medium_term_bias_label":"待计算","advantages":["来自配置股票池，可用于行情观察"],"risks":["尚未生成交易计划，不可作为入场信号"],"signal_name":"配置股票池","risk_level":"未评级","row_id":"candidate-27","is_config_coverage":true}],"daily_report":{"path":"C:\\Users\\23884\\AppData\\Local\\Temp\\tmpbo7fwev6\\daily_report.md","requested_path":"C:\\Users\\23884\\AppData\\Local\\Temp\\tmpbo7fwev6\\daily_report.md","exists":true,"used_fallback":false,"content":"# 研究日报 — 2026-06-01\n\n- 生成时间: 2026-06-01T11:28:59\n- 配置: configs/default.json\n- 假定单笔金额: 10000.00\n\n> 本报告为规则筛选结果，不构成投资建议，不保证收益。\n\n## 一、候选名单\n\n| 代码 | 状态 | 评分 | 入场价 | 止损价 | 止盈价 | 跟踪止损 | 往返费用 |\n|------|------|------|--------|--------|--------|----------|----------|\n| 512100 | 可入场候选 | 72.5 | 1.2969 | 1.2342 | 1.4098 | 3.52% | 15.00 |\n| 518880 | 可入场候选 | 70.8 | 4.9490 | 4.7510 | 5.3053 | 3.00% | 15.00 |\n\n## 二、明日触发价一览\n\n| 代码 | 信号收盘价 | 入场触发价 | 失效价 |\n|------|-----------|-----------|--------|\n| 512100 | 1.2800 | 1.2969 | 1.2181 |\n| 518880 | 4.9000 | 4.9490 | 4.7040 |\n\n## 三、被剔除标的及原因\n\n暂无剔除记录（所有已配置标的均参与筛选）。\n\n## 四、风险提示汇总\n\n**512100**:\n  - RSI偏高，追价风险抬升\n  - 缺少新闻分数，不能视为新闻确认\n**518880**:\n  - RSI偏高，追价风险抬升\n  - 缺少新闻分数，不能视为新闻确认\n\n## 五、复盘统计\n\n- 总信号数: 2\n- 已触发: 0\n- 已成交: 0\n- 已退出: 0\n- 胜率: 0.0%\n- 平均盈亏: 0.0000\n- 平均盈利: 0.0000\n- 平均亏损: 0.0000\n- 盈亏比: 0.00\n- 最大连亏: 0\n- 累计盈亏: 0.0000\n\n## 六、持仓规则提醒\n\n- 所有候选仅为规则筛选结果，**不是**买卖指令。\n- 可入场候选 状态表示规则层面的强候选，仍需人工确认。\n- 观察 状态表示仅观察，不应自动转成市价买入。\n- 请在成交前确认新闻面无重大变化。\n- 遵守单笔/单日/总仓位限额。\n","preview":"研究日报 — 2026-06-01；生成时间: 2026-06-01T11:28:59；配置: configs/default.json"},"paper":{"available":true,"all_passed":true,"summary":"纸面撮合共检查 4 笔，4 笔通过，0 笔需复核。 当前纸面检查通过。","passed_count":4,"failed_count":0},"warnings":["交易计划生成了 2 个候选；看板已从配置股票池补全 26 个观察标的。补全标的仅用于行情观察，运行 pipeline 后才会生成买入、止盈、止损计划。"],"disclaimer":"本页面为只读研究看板，不构成投资建议，不保证收益，不提供实盘下单入口。"}</script>
+<script>
+
 // 1. 高保真 Demo 模拟数据集 (完美复刻 68 条标的)
 let REAL_DATA = JSON.parse(document.getElementById("dashboard-data").textContent);
 let DEMO_DATA = {
@@ -5117,4 +4450,7 @@ function runL1RealtimePriceTicker() {
 window.addEventListener("DOMContentLoaded", initDashboard);
 // 同时也监听可能动态注入完毕的时刻
 setTimeout(initDashboard, 100);
-"""
+
+</script>
+</body>
+</html>

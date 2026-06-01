@@ -521,6 +521,20 @@ def _cmd_pipeline(config: QuantConfig, args) -> dict:
         "paper": paper_payload,
     }
     (output_dir / "manifest.json").write_text(_to_json(manifest) + "\n", encoding="utf-8")
+    
+    # 自动将本次 pipeline 生成的最新成果拷贝发布到 reports/ 默认路径下，使系统默认的 Dashboard/Web 服务保持最新同步
+    import shutil
+    try:
+        reports_dir = Path("reports")
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(plan_path, reports_dir / "trade_plan.json")
+        shutil.copy2(daily_path, reports_dir / "daily_report.md")
+        target_dashboard = Path(config.ops.dashboard_path or "reports/dashboard.html")
+        target_dashboard.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(dashboard_path, target_dashboard)
+    except Exception as exc:
+        print(f"Warning: Failed to auto-publish pipeline outputs to reports/: {exc}")
+
     return manifest
 
 
