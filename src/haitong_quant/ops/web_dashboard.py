@@ -189,7 +189,8 @@ def fetch_realtime_quotes(symbols_list: list[str]) -> dict:
         if queries:
             url = f"http://qt.gtimg.cn/q={','.join(queries)}"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=2.0) as response:
+            # 将超时时间由 2.0s 提高到 5.0s，大幅提升网络容错率
+            with urllib.request.urlopen(req, timeout=5.0) as response:
                 content = response.read().decode("gbk", errors="ignore")
             for line in content.split(";"):
                 line = line.strip()
@@ -218,20 +219,23 @@ def fetch_realtime_quotes(symbols_list: list[str]) -> dict:
 
     for symbol in clean_symbols:
         if symbol and symbol not in results:
-            close_val = close_hints.get(symbol) or 2.0
-            oscillation = random.uniform(-0.0005, 0.0005)
-            results[symbol] = {
-                "name": SECURITY_NAME_MAP.get(symbol) or symbol,
-                "price": round(close_val * (1.0 + oscillation), 4),
-                "change": 0.0,
-                "change_pct": round(oscillation * 100.0, 2),
-                "volume": 0.0,
-                "amount": 0.0,
-                "asset_type": "A股/ETF",
-                "source": "simulated",
-                "source_label": "模拟行情",
-                "refreshed_at": refreshed_at,
-            }
+            close_val = close_hints.get(symbol) or 0.0
+            # 只有当前端传递了有效的价格参数（大于 0.0）时，才予以生成模拟行情兜底
+            # 如果 close_val 为 0.0，说明这是一个无效的初始状态请求，拒绝使用假 2.0 价格覆盖前端，以保留已有真实收盘价
+            if close_val > 0.0:
+                oscillation = random.uniform(-0.0005, 0.0005)
+                results[symbol] = {
+                    "name": SECURITY_NAME_MAP.get(symbol) or symbol,
+                    "price": round(close_val * (1.0 + oscillation), 4),
+                    "change": 0.0,
+                    "change_pct": round(oscillation * 100.0, 2),
+                    "volume": 0.0,
+                    "amount": 0.0,
+                    "asset_type": "A股/ETF",
+                    "source": "simulated",
+                    "source_label": "模拟行情",
+                    "refreshed_at": refreshed_at,
+                }
 
     quote_values = [value for key, value in results.items() if not key.startswith("__")]
     live_count = sum(1 for value in quote_values if value.get("source") == "live")

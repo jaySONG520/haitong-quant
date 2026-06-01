@@ -312,6 +312,24 @@ def _append_config_universe_candidates(
     return added
 
 
+def _load_latest_close_from_db(symbol: str) -> float:
+    """从本地 SQLite 数据库获取最近的真实日线收盘价，作为看板初始兜底价"""
+    import sqlite3
+    db_path = "data/cache.db"
+    try:
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT close FROM bars WHERE symbol = ? ORDER BY bar_date DESC LIMIT 1",
+            (symbol,)
+        ).fetchone()
+        conn.close()
+        if row:
+            return float(row[0])
+    except Exception:
+        pass
+    return 0.0
+
+
 def _config_universe_candidate(
     symbol: str,
     index: int,
@@ -319,6 +337,7 @@ def _config_universe_candidate(
     generated_at: str = "",
     plan_date: str = "",
 ) -> dict[str, Any]:
+    latest_close = _load_latest_close_from_db(symbol)
     return {
         "symbol": symbol,
         "name": SECURITY_NAME_MAP.get(symbol, symbol),
@@ -328,8 +347,8 @@ def _config_universe_candidate(
         "status_tone": STATUS_TONES["watch_only"],
         "status_rank": STATUS_ORDER["watch_only"],
         "score": 0.0,
-        "signal_close": 0.0,
-        "plan_signal_close": 0.0,
+        "signal_close": latest_close,
+        "plan_signal_close": latest_close,
         "plan_generated_at": generated_at,
         "date": plan_date,
         "entry_price": 0.0,
@@ -363,7 +382,9 @@ def _normalize_candidate(item: dict[str, Any], index: int, *, generated_at: str 
     name = str(item.get("name") or SECURITY_NAME_MAP.get(symbol) or symbol)
     index_name = str(item.get("index_name") or item.get("index") or SECURITY_INDEX_MAP.get(symbol) or "")
     entry_price = _to_float(item.get("entry_price"))
-    signal_close = _to_float(item.get("signal_close"))
+    # 优先采用本地 SQLite 数据库中的最新真实历史收盘价，作为看板显示的初始“最新价”，解决因 trade_plan.json 价格陈旧导致的初始化跳变
+    db_close = _load_latest_close_from_db(symbol)
+    signal_close = db_close if db_close > 0.0 else _to_float(item.get("signal_close"))
     stop_price = _to_float(item.get("stop_loss_price_if_entry_fills"))
     take_profit = _to_float(item.get("take_profit_price_if_entry_fills"))
     stop_gap_pct = _ratio(entry_price - stop_price, entry_price)
@@ -380,7 +401,7 @@ def _normalize_candidate(item: dict[str, Any], index: int, *, generated_at: str 
         "status_rank": STATUS_ORDER.get(status, 9),
         "score": _to_float(item.get("total_score")),
         "signal_close": signal_close,
-        "plan_signal_close": signal_close,
+        "plan_signal_close": _to_float(item.get("signal_close")),
         "plan_generated_at": generated_at,
         "date": str(item.get("date") or plan_date or ""),
         "entry_price": entry_price,
@@ -4996,6 +5017,20 @@ function applyDashboardSummary(summary) {
   REAL_DATA.warnings = REAL_DATA.warnings || [];
   REAL_DATA.daily_report = REAL_DATA.daily_report || { content: "" };
   REAL_DATA.paper = REAL_DATA.paper || { summary: "暂无纸面账户摘要。" };
+
+  // 恢复之前已被轮询更新为“live”真实实时行情的价格，避免在刷新摘要时被 trade_plan.json 的旧静态价格覆盖
+  REAL_DATA.candidates.forEach(item => {
+    const previous = previousQuotes.get(item.symbol);
+    if (previous && previous.quote_source === "live") {
+      item.signal_close = previous.signal_close;
+      item.change_pct = previous.change_pct;
+      item.quote_source = previous.quote_source;
+      item.quote_refreshed_at = previous.quote_refreshed_at;
+      if (previous.name) {
+        item.name = previous.name;
+      }
+    }
+  });
 
   if (REAL_DATA.polling) {
     state.minPollIntervalSeconds = Number(REAL_DATA.polling.min_interval_seconds || state.minPollIntervalSeconds);
