@@ -84,6 +84,7 @@ def render_static_dashboard(
     *,
     trade_plan_path: str | Path = "reports/trade_plan.json",
     daily_report_path: str | Path = "reports/daily_report.md",
+    config_path: str | Path | None = None,
     paper_report: dict | None = None,
     dashboard_poll_interval_seconds: int = 30,
     dashboard_min_poll_interval_seconds: int = 5,
@@ -91,6 +92,7 @@ def render_static_dashboard(
     summary = build_dashboard_summary(
         trade_plan_path=trade_plan_path,
         daily_report_path=daily_report_path,
+        config_path=config_path,
         paper_report=paper_report,
         dashboard_poll_interval_seconds=dashboard_poll_interval_seconds,
         dashboard_min_poll_interval_seconds=dashboard_min_poll_interval_seconds,
@@ -107,6 +109,7 @@ def build_dashboard_summary(
     *,
     trade_plan_path: str | Path = "reports/trade_plan.json",
     daily_report_path: str | Path = "reports/daily_report.md",
+    config_path: str | Path | None = None,
     paper_report: dict | None = None,
     dashboard_poll_interval_seconds: int = 30,
     dashboard_min_poll_interval_seconds: int = 5,
@@ -120,16 +123,39 @@ def build_dashboard_summary(
     generated_at = str(payload.get("generated_at") or _mtime_iso(trade_path) or "")
     plan_date = _date_label(generated_at)
     candidates = [_normalize_candidate(item, index, generated_at=generated_at, plan_date=plan_date) for index, item in enumerate(items)]
-    daily_content = _read_text(daily_path)
+    plan_candidate_count = len(candidates)
+    resolved_config_path = _resolve_config_path(
+        config_path or payload.get("config"),
+        trade_path=trade_path,
+    )
+    config_symbols = load_dashboard_config_symbols(resolved_config_path)
+    config_added_count = _append_config_universe_candidates(
+        candidates,
+        config_symbols,
+        generated_at=generated_at,
+        plan_date=plan_date,
+    )
+    daily_payload = read_dashboard_daily_report(daily_path)
+    daily_content = str(daily_payload["content"])
+    effective_daily_path = Path(str(daily_payload["path"]))
     warnings = []
     if not trade_path.exists():
         warnings.append("未找到交易计划文件，候选看板为空。")
     if not daily_path.exists():
         warnings.append("未找到研究日报文件，日报区域为空。")
+    elif daily_payload.get("used_fallback"):
+        warnings.append(f"日报原文件内容较少，已自动展示 {effective_daily_path.name}。")
     if not candidates:
         warnings.append("当前没有可展示的候选标的。")
-    elif payload.get("config"):
-        warnings.append(f"当前看板仅展示交易计划中的 {len(candidates)} 个候选，不代表全市场扫描结果；扩大股票池需要更新配置或重新运行 universe/pipeline。")
+    elif config_added_count:
+        warnings.append(
+            f"交易计划生成了 {plan_candidate_count} 个候选；看板已从配置股票池补全 "
+            f"{config_added_count} 个观察标的。补全标的仅用于行情观察，运行 pipeline 后才会生成买入、止盈、止损计划。"
+        )
+    elif payload.get("config") or resolved_config_path:
+        warnings.append(
+            f"当前看板展示交易计划中的 {plan_candidate_count} 个候选；如需扩大股票池，请更新配置并重新运行 universe/pipeline。"
+        )
     min_interval = max(1, int(dashboard_min_poll_interval_seconds or 5))
     default_interval = max(min_interval, int(dashboard_poll_interval_seconds or 30))
     refreshed_at = datetime.now().isoformat(timespec="seconds")
@@ -145,13 +171,17 @@ def build_dashboard_summary(
         "mode_label": "只读研究模式" if payload.get("research_only", True) else "未确认模式",
         "source_paths": {
             "trade_plan": str(trade_path),
-            "daily_report": str(daily_path),
+            "daily_report": str(effective_daily_path),
+            "daily_report_requested": str(daily_path),
+            "config": str(resolved_config_path) if resolved_config_path else "",
         },
         "metrics": _build_metrics(candidates),
         "candidates": candidates,
         "daily_report": {
-            "path": str(daily_path),
-            "exists": daily_path.exists(),
+            "path": str(effective_daily_path),
+            "requested_path": str(daily_path),
+            "exists": bool(daily_payload["exists"]),
+            "used_fallback": bool(daily_payload["used_fallback"]),
             "content": _localize_report_content(daily_content),
             "preview": _daily_preview(daily_content),
         },
@@ -179,6 +209,116 @@ def _load_trade_plan_items(path: str | Path) -> list[dict]:
     payload = _load_trade_plan_payload(path)
     items = payload.get("items", [])
     return items if isinstance(items, list) else []
+
+
+def _resolve_config_path(raw_path: str | Path | None, *, trade_path: Path) -> Path | None:
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    cwd_path = Path.cwd() / path
+    if cwd_path.exists():
+        return cwd_path
+    plan_relative = trade_path.parent / path
+    if plan_relative.exists():
+        return plan_relative
+    return path
+
+
+def load_dashboard_config_symbols(config_path: str | Path | None) -> list[str]:
+    if not config_path:
+        return []
+    path = Path(config_path)
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for section, key in (("strategy", "symbols"), ("risk", "allowed_symbols")):
+        values = payload.get(section, {}).get(key, [])
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            symbol = str(value or "").strip()
+            if symbol and symbol not in seen:
+                seen.add(symbol)
+                symbols.append(symbol)
+    return symbols
+
+
+def _append_config_universe_candidates(
+    candidates: list[dict[str, Any]],
+    symbols: list[str],
+    *,
+    generated_at: str,
+    plan_date: str,
+) -> int:
+    existing = {str(item.get("symbol") or "") for item in candidates}
+    added = 0
+    for symbol in symbols:
+        if symbol in existing:
+            continue
+        candidates.append(
+            _config_universe_candidate(
+                symbol,
+                len(candidates),
+                generated_at=generated_at,
+                plan_date=plan_date,
+            )
+        )
+        existing.add(symbol)
+        added += 1
+    return added
+
+
+def _config_universe_candidate(
+    symbol: str,
+    index: int,
+    *,
+    generated_at: str = "",
+    plan_date: str = "",
+) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "name": SECURITY_NAME_MAP.get(symbol, symbol),
+        "index_name": SECURITY_INDEX_MAP.get(symbol, "配置股票池"),
+        "status": "watch_only",
+        "status_label": STATUS_LABELS["watch_only"],
+        "status_tone": STATUS_TONES["watch_only"],
+        "status_rank": STATUS_ORDER["watch_only"],
+        "score": 0.0,
+        "signal_close": 0.0,
+        "plan_signal_close": 0.0,
+        "plan_generated_at": generated_at,
+        "date": plan_date,
+        "entry_price": 0.0,
+        "pre_entry_invalidation_price": 0.0,
+        "stop_loss_price": 0.0,
+        "take_profit_price": 0.0,
+        "trailing_stop_pct": 0.0,
+        "entry_distance_pct": 0.0,
+        "stop_gap_pct": 0.0,
+        "profit_gap_pct": 0.0,
+        "risk_reward": 0.0,
+        "assumed_order_value": 0.0,
+        "estimated_round_trip_fee": 0.0,
+        "news_score": 0.0,
+        "news_summary": "来自配置股票池，尚未进入本次交易计划。",
+        "news_url": "",
+        "short_term_bias_label": "待计算",
+        "medium_term_bias_label": "待计算",
+        "advantages": ["来自配置股票池，可用于行情观察"],
+        "risks": ["尚未生成交易计划，不可作为入场信号"],
+        "signal_name": "配置股票池",
+        "risk_level": "未评级",
+        "row_id": f"candidate-{index}",
+        "is_config_coverage": True,
+    }
 
 
 def _normalize_candidate(item: dict[str, Any], index: int, *, generated_at: str = "", plan_date: str = "") -> dict[str, Any]:
@@ -308,6 +448,44 @@ def _localize_news(value: str) -> str:
 def _localize_report_content(content: str) -> str:
     localized = content
     replacements = {
+        "Quant Candidate Research Report": "量化候选研究日报",
+        "Generated at:": "生成时间：",
+        "Config:": "配置文件：",
+        "News input:": "新闻输入：",
+        "Assumed order value:": "假设单笔金额：",
+        "Minimum score:": "最低入选分数：",
+        "Research output only. This is a rules-based screen, not a return guarantee or personalized buy/sell instruction.": "本报告仅用于研究复盘。它是基于规则的筛选结果，不代表收益保证，也不构成个性化买卖指令。",
+        "Ranked Candidates": "候选排序",
+        "Close:": "收盘价：",
+        "Total score:": "综合得分：",
+        "Short-term bias:": "短期倾向：",
+        "Medium-term bias:": "中期倾向：",
+        "News score:": "新闻分数：",
+        "News summary:": "新闻摘要：",
+        "News URL: n/a": "新闻链接：无",
+        "News URL:": "新闻链接：",
+        "Advantages:": "优势：",
+        "Risks:": "风险：",
+        "Key metrics:": "关键指标：",
+        "Fee-aware rules:": "费用敏感规则：",
+        "5-day return:": "5日收益率：",
+        "20-day return:": "20日收益率：",
+        "MA5 / MA20 / MA60:": "MA5 / MA20 / MA60：",
+        "ATR14 pct:": "ATR14占比：",
+        "Volume ratio 5/20:": "5日/20日成交量比：",
+        "20-day drawdown:": "20日回撤：",
+        "Entry trigger:": "入场触发：",
+        "Stop loss:": "止损：",
+        "Take profit:": "止盈：",
+        "Trailing stop:": "跟踪止损：",
+        "Round-trip fee drag:": "双边费用拖累：",
+        "Minimum order value for about 30 bps fee drag:": "约30bp费用拖累对应的最低订单金额：",
+        "Rule text:": "规则说明：",
+        "Research rule: consider entry only if the candidate still passes the score threshold and price breaks": "研究规则：仅当候选仍通过分数阈值且价格突破",
+        "above the signal close; stop loss at": "高于信号收盘价时考虑入场；止损设在成交价下方",
+        "below fill; take profit around": "；止盈约为",
+        "or use a": "，或使用",
+        "trailing stop after profit; skip trades below the minimum-fee-friendly order value.": "跟踪止损保护盈利；低于最低费用友好金额的交易跳过。",
         "entry_candidate": "可入场候选",
         "watch_only": "观察",
         "skip": "跳过",
@@ -317,6 +495,10 @@ def _localize_report_content(content: str) -> str:
     for source, target in replacements.items():
         localized = localized.replace(source, target)
     return localized
+
+
+def localize_dashboard_report_content(content: str) -> str:
+    return _localize_report_content(content)
 
 
 def _daily_preview(content: str) -> str:
@@ -332,6 +514,66 @@ def _daily_preview(content: str) -> str:
 
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig") if path.exists() else ""
+
+
+def read_dashboard_daily_report(path: str | Path) -> dict[str, Any]:
+    daily_path = Path(path)
+    content = _read_text(daily_path)
+    if _is_meaningful_report(content):
+        return {
+            "path": str(daily_path),
+            "requested_path": str(daily_path),
+            "exists": True,
+            "used_fallback": False,
+            "content": content,
+        }
+
+    fallback_path, fallback_content = _find_report_fallback(daily_path)
+    if fallback_path is not None:
+        return {
+            "path": str(fallback_path),
+            "requested_path": str(daily_path),
+            "exists": True,
+            "used_fallback": fallback_path != daily_path,
+            "content": fallback_content,
+        }
+
+    return {
+        "path": str(daily_path),
+        "requested_path": str(daily_path),
+        "exists": daily_path.exists(),
+        "used_fallback": False,
+        "content": content,
+    }
+
+
+def _is_meaningful_report(content: str) -> bool:
+    text = content.strip()
+    return len(text) >= 10 and any(char.isalnum() for char in text)
+
+
+def _find_report_fallback(daily_path: Path) -> tuple[Path, str] | tuple[None, str]:
+    candidates: list[Path] = []
+    for name in ("research_report.md", "generated_stock_report.md", "stock_screen_report.md"):
+        candidates.append(daily_path.with_name(name))
+    if daily_path.parent.exists():
+        candidates.extend(
+            sorted(
+                daily_path.parent.glob("*report*.md"),
+                key=lambda item: item.stat().st_mtime if item.exists() else 0,
+                reverse=True,
+            )
+        )
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen or candidate == daily_path or not candidate.exists():
+            continue
+        seen.add(candidate)
+        content = _read_text(candidate)
+        if _is_meaningful_report(content):
+            return candidate, content
+    return None, ""
 
 
 def _mtime_iso(path: Path) -> str:
@@ -492,9 +734,8 @@ __DASHBOARD_STYLE__
       </div></div>
       
       <div class="top-meta">
-        <div class="mode-switch-group">
-          <button type="button" class="mode-switch-btn active" id="btnDemoMode" onclick="setDataSource('demo')">演示数据</button>
-          <button type="button" class="mode-switch-btn" id="btnRealMode" onclick="setDataSource('real')">系统数据</button>
+        <div class="mode-switch-group single-mode" aria-label="数据模式">
+          <button type="button" class="mode-switch-btn active" id="btnRealMode" onclick="setDataSource('real')">系统数据</button>
         </div>
         <div class="weather-meta">
           <svg class="sun-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
@@ -674,6 +915,7 @@ __DASHBOARD_STYLE__
         <div class="view-panel" id="panel-report">
           <div class="report-edit-container">
             <div class="report-actions" style="margin-bottom: 12px; justify-content: flex-start;">
+              <button class="btn-cancel-report" id="btnRefreshReport" onclick="refreshDailyReportFromServer()">刷新日报</button>
               <button class="btn-cancel-report" id="btnEditReport" onclick="enterReportEditMode()">✏️ 在线编辑日报</button>
             </div>
             <article class="report-markdown-body" id="dailyReport"></article>
@@ -1316,6 +1558,11 @@ body {
   border: 1px solid var(--border);
 }
 
+.mode-switch-group.single-mode {
+  background-color: rgba(37, 99, 235, 0.08);
+  border-color: rgba(37, 99, 235, 0.14);
+}
+
 .mode-switch-btn {
   border: 0;
   background: transparent;
@@ -1855,6 +2102,11 @@ body {
 .price-plan-cell.plan-danger strong,
 .price-plan-cell.plan-danger small:last-child {
   color: var(--color-red);
+}
+
+.price-plan-cell.plan-pending strong,
+.price-plan-cell.plan-pending small:last-child {
+  color: var(--color-orange);
 }
 
 .badge {
@@ -2574,6 +2826,12 @@ body {
   margin-top: 2px;
 }
 
+.card-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
 .risk-tags-group {
   display: flex;
   flex-direction: column;
@@ -3014,7 +3272,7 @@ DEMO_DATA.candidates = PREDEFINED_CANDIDATES;
 
 // 2. 状态机
 const state = {
-  dataSource: "demo", // 'demo' | 'real'
+  dataSource: "real",
   currentTab: "overview",
   statusFilter: "all",
   searchQuery: "",
@@ -3046,10 +3304,7 @@ const state = {
 
 // 3. 全局获取当前活动的数据集
 function getActiveData() {
-  if (state.dataSource === "real") {
-    return REAL_DATA;
-  }
-  return DEMO_DATA;
+  return REAL_DATA;
 }
 
 // 获取当前过滤和搜索后的标的列表
@@ -3059,7 +3314,8 @@ function getFilteredCandidates() {
   
   const matches = data.candidates.filter(item => {
     // 状态过滤
-    const statusMatch = state.statusFilter === "all" || item.status === state.statusFilter;
+    const statusMatch = state.statusFilter === "all"
+      || (state.statusFilter === "entry_candidate" ? isPlanActionable(item) : item.status === state.statusFilter);
     // 搜索词过滤
     const searchMatch = !query || 
                         item.symbol.toLowerCase().includes(query) || 
@@ -3152,6 +3408,15 @@ function getPlanInvalidationPrice(item) {
 function getPlanHealth(item) {
   if (!item || item.is_external_lookup) {
     return { actionable: false, level: "neutral", label: "行情查询", reason: "仅查行情，不生成交易计划", distancePct: 0 };
+  }
+  if (item.is_config_coverage) {
+    return {
+      actionable: false,
+      level: "warning",
+      label: "观察",
+      reason: "配置股票池补全，尚未生成交易计划；请运行 pipeline 计算买入、止盈、止损价",
+      distancePct: 0
+    };
   }
   const current = Number(item.signal_close || 0);
   const planBasis = Number(item.plan_signal_close || item.entry_price || 0);
@@ -3307,18 +3572,20 @@ function initDashboard() {
   renderSandbox();
 
   // 首次运行
-  const preferredMode = (REAL_DATA.candidates && REAL_DATA.candidates.length > 0) ? "real" : "demo";
-  setDataSource(preferredMode);
+  setDataSource("real");
   runL1RealtimePriceTicker();
 }
 
 // 切换数据源
 function setDataSource(mode) {
+  mode = "real";
   state.dataSource = mode;
   state.currentPage = 1;
   
-  document.getElementById("btnDemoMode").classList.toggle("active", mode === "demo");
-  document.getElementById("btnRealMode").classList.toggle("active", mode === "real");
+  const realButton = document.getElementById("btnRealMode");
+  if (realButton) {
+    realButton.classList.add("active");
+  }
   
   // 初始化默认选中的标的
   const data = getActiveData();
@@ -3330,7 +3597,7 @@ function setDataSource(mode) {
   
   renderKPIAndTopbar();
   renderPanel();
-  showToast(`切换至 ${mode === "demo" ? "68只标的高保真演示模式" : "系统实时数据模式"}`);
+  showToast("当前为系统数据模式。");
 }
 
 // 隐藏/显示总资产
@@ -3360,8 +3627,8 @@ function renderKPIAndTopbar() {
   const displayTime = data.refreshed_at || data.generated_at;
   
   // 顶部元信息
-  document.getElementById("dateStr").textContent = state.dataSource === "demo" ? "2025-05-20 (周二)" : formatRealDate(displayTime);
-  document.getElementById("timeStr").textContent = state.dataSource === "demo" ? "15:00:00" : formatRealTime(displayTime);
+  document.getElementById("dateStr").textContent = formatRealDate(displayTime);
+  document.getElementById("timeStr").textContent = formatRealTime(displayTime);
   
   // KPI 卡片数据
   let candCount = 0;
@@ -3508,8 +3775,11 @@ function renderOverviewTable(items) {
     const takeProfitPrice = getPlanTakeProfitPrice(item);
     const stopLossPrice = getPlanStopLossPrice(item);
     const planHealth = getPlanHealth(item);
+    const hasPlanPrices = buyPrice > 0 && (takeProfitPrice > 0 || stopLossPrice > 0);
     const entryTrigStr = item.is_external_lookup
       ? `<span class="price-plan-cell"><strong>暂无计划</strong><small>仅展示行情</small></span>`
+      : item.is_config_coverage || !hasPlanPrices
+      ? `<span class="price-plan-cell plan-pending"><strong>暂无计划</strong><small>等待 pipeline 计算买/止/盈</small><small>${escapeHtml(planHealth.reason)}</small></span>`
       : `<span class="price-plan-cell ${planHealth.level === "danger" ? "plan-danger" : ""}"><strong>${planHealth.actionable ? "买" : "旧"} ${formatMoney(buyPrice)}</strong><small>止 ${formatMoney(stopLossPrice)} / 盈 ${formatMoney(takeProfitPrice)}</small><small>${escapeHtml(planHealth.reason)}</small></span>`;
     
     return `
@@ -3605,6 +3875,8 @@ function renderTriggersTab(items) {
     const takeProfitPrice = getPlanTakeProfitPrice(item);
     const stopLossPrice = getPlanStopLossPrice(item);
     const invalidPrice = getPlanInvalidationPrice(item);
+    const planHealth = getPlanHealth(item);
+    const hasPlanPrices = buyPrice > 0 && (takeProfitPrice > 0 || stopLossPrice > 0);
     return `
       <article class="card-item">
         <div class="card-item-header">
@@ -3612,14 +3884,15 @@ function renderTriggersTab(items) {
             <strong>${escapeHtml(item.symbol)}</strong>
             <span>${escapeHtml(item.name || getFundName(item.symbol))}</span>
           </div>
-          <span class="badge ${getStatusBadgeClass(item.status)}">${escapeHtml(item.status_label || getStatusLabel(item.status))}</span>
+          <span class="badge ${getPlanBadgeClass(planHealth, item.status)}">${escapeHtml(planHealth.label)}</span>
         </div>
         <div class="card-item-metrics">
-          <div class="card-metric"><span>计划买入</span><strong>${formatMoney(buyPrice)}</strong></div>
-          <div class="card-metric"><span>止盈卖出</span><strong>${formatMoney(takeProfitPrice)}</strong></div>
-          <div class="card-metric"><span>止损离场</span><strong>${formatMoney(stopLossPrice)}</strong></div>
-          <div class="card-metric"><span>入场前失效</span><strong>${formatMoney(invalidPrice)}</strong></div>
+          <div class="card-metric"><span>计划买入</span><strong>${hasPlanPrices ? formatMoney(buyPrice) : "待计算"}</strong></div>
+          <div class="card-metric"><span>止盈卖出</span><strong>${hasPlanPrices ? formatMoney(takeProfitPrice) : "待计算"}</strong></div>
+          <div class="card-metric"><span>止损离场</span><strong>${hasPlanPrices ? formatMoney(stopLossPrice) : "待计算"}</strong></div>
+          <div class="card-metric"><span>入场前失效</span><strong>${invalidPrice > 0 ? formatMoney(invalidPrice) : "待计算"}</strong></div>
         </div>
+        <div class="card-note">${escapeHtml(planHealth.reason)}</div>
       </article>
     `;
   }).join("");
@@ -4318,6 +4591,46 @@ function saveDailyReportToServer() {
   });
 }
 
+function refreshDailyReportFromServer() {
+  if (!isServiceMode()) {
+    showToast("静态文件模式不能自动拉取日报，请用 --serve 启动 Web 服务。");
+    return;
+  }
+  const button = document.getElementById("btnRefreshReport");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "刷新中";
+  }
+  fetch(`/api/daily-report?ts=${Date.now()}`, { cache: "no-store" })
+    .then(res => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })
+    .then(payload => {
+      if (!REAL_DATA.daily_report) {
+        REAL_DATA.daily_report = {};
+      }
+      REAL_DATA.daily_report.path = payload.path || REAL_DATA.daily_report.path || "";
+      REAL_DATA.daily_report.content = payload.content || "";
+      REAL_DATA.daily_report.exists = Boolean(payload.content);
+      REAL_DATA.daily_report.preview = payload.content ? payload.content.split(/\r?\n/).filter(Boolean).slice(0, 3).join("；") : "暂无研究日报内容";
+      if (state.currentTab === "report") {
+        renderReportTab();
+      }
+      showToast("日报原文已刷新。");
+    })
+    .catch(err => {
+      console.warn("日报刷新失败：", err);
+      showToast("日报刷新失败，已保留当前内容。");
+    })
+    .finally(() => {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "刷新日报";
+      }
+    });
+}
+
 // ==========================================
 // 14. 看板自动刷新与实时价格轮询
 // ==========================================
@@ -4604,11 +4917,6 @@ function isServiceMode() {
 // ==========================================
 function runL1RealtimePriceTicker() {
   const data = getActiveData();
-  if (state.dataSource !== "real") {
-    state.priceSourceLabel = "行情来源：演示数据";
-    updatePollingStatus();
-    return Promise.resolve(false);
-  }
   if (!isServiceMode() || !data.candidates || data.candidates.length === 0) {
     return Promise.resolve(false);
   }

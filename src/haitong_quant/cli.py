@@ -504,6 +504,7 @@ def _cmd_pipeline(config: QuantConfig, args) -> dict:
         render_static_dashboard(
             trade_plan_path=plan_path,
             daily_report_path=daily_path,
+            config_path=args.config,
             paper_report=paper_payload,
             dashboard_poll_interval_seconds=config.ops.dashboard_poll_interval_seconds,
             dashboard_min_poll_interval_seconds=config.ops.dashboard_min_poll_interval_seconds,
@@ -603,6 +604,7 @@ def _cmd_dashboard(config: QuantConfig, args) -> dict:
         serve_dashboard(
             trade_plan_path=args.trade_plan,
             daily_report_path=args.daily_report,
+            config_path=args.config,
             host=args.host,
             port=args.port,
             dashboard_poll_interval_seconds=config.ops.dashboard_poll_interval_seconds,
@@ -613,6 +615,7 @@ def _cmd_dashboard(config: QuantConfig, args) -> dict:
     content = render_static_dashboard(
         trade_plan_path=args.trade_plan,
         daily_report_path=args.daily_report,
+        config_path=args.config,
         dashboard_poll_interval_seconds=config.ops.dashboard_poll_interval_seconds,
         dashboard_min_poll_interval_seconds=config.ops.dashboard_min_poll_interval_seconds,
     )

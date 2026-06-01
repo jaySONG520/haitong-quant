@@ -65,6 +65,7 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("轮询间隔", html)
             self.assertIn("最后刷新", html)
             self.assertIn("下次刷新", html)
+            self.assertIn("刷新日报", html)
             self.assertIn("行情来源", html)
             self.assertIn("价格趋势", html)
             self.assertIn("计划触发价", html)
@@ -77,6 +78,58 @@ class DashboardTests(unittest.TestCase):
             self.assertNotIn("Haitong Quant Dashboard", html)
             self.assertNotIn("Trade Plan", html)
             self.assertNotIn("RSI is high; chasing risk is elevated", html)
+
+    def test_summary_supplements_config_universe_as_watch_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trade_plan = root / "trade_plan.json"
+            daily_report = root / "daily_report.md"
+            config_path = root / "default.json"
+            trade_plan.write_text(
+                json.dumps(
+                    {
+                        "research_only": True,
+                        "generated_at": "2026-05-30T15:15:00",
+                        "config": str(config_path),
+                        "items": [
+                            {
+                                "symbol": "510500",
+                                "status": "watch_only",
+                                "total_score": 62.0,
+                                "entry_price": 7.1,
+                                "stop_loss_price_if_entry_fills": 6.8,
+                                "take_profit_price_if_entry_fills": 7.6,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            daily_report.write_text("# 研究日报", encoding="utf-8")
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "strategy": {"symbols": ["510500", "510300"]},
+                        "risk": {"allowed_symbols": ["510500", "510300", "512100"]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = build_dashboard_summary(
+                trade_plan_path=trade_plan,
+                daily_report_path=daily_report,
+                config_path=config_path,
+            )
+
+            self.assertEqual(summary["metrics"]["candidate_count"], 3)
+            by_symbol = {item["symbol"]: item for item in summary["candidates"]}
+            self.assertFalse(by_symbol["510500"].get("is_config_coverage", False))
+            self.assertTrue(by_symbol["510300"]["is_config_coverage"])
+            self.assertTrue(by_symbol["512100"]["is_config_coverage"])
+            self.assertEqual(by_symbol["510300"]["status_label"], "观察")
+            self.assertEqual(by_symbol["510300"]["entry_price"], 0.0)
+            self.assertIn("配置股票池补全", " ".join(summary["warnings"]))
 
     def test_summary_handles_missing_files_with_chinese_empty_state(self):
         with tempfile.TemporaryDirectory() as tmp:

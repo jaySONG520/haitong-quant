@@ -10,6 +10,9 @@ from haitong_quant.ops.dashboard import (
     SECURITY_INDEX_MAP,
     SECURITY_NAME_MAP,
     build_dashboard_summary,
+    load_dashboard_config_symbols,
+    localize_dashboard_report_content,
+    read_dashboard_daily_report,
     render_static_dashboard,
 )
 
@@ -18,6 +21,7 @@ def create_flask_app(
     *,
     trade_plan_path: str | Path = "reports/trade_plan.json",
     daily_report_path: str | Path = "reports/daily_report.md",
+    config_path: str | Path | None = None,
     dashboard_poll_interval_seconds: int = 30,
     dashboard_min_poll_interval_seconds: int = 5,
 ):
@@ -34,6 +38,7 @@ def create_flask_app(
             render_static_dashboard(
                 trade_plan_path=trade_plan_path,
                 daily_report_path=daily_report_path,
+                config_path=config_path,
                 dashboard_poll_interval_seconds=dashboard_poll_interval_seconds,
                 dashboard_min_poll_interval_seconds=dashboard_min_poll_interval_seconds,
             ),
@@ -49,8 +54,11 @@ def create_flask_app(
 
     @app.get("/api/daily-report")
     def daily_report():
-        path = Path(daily_report_path)
-        return jsonify({"path": str(path), "content": path.read_text(encoding="utf-8-sig") if path.exists() else ""})
+        payload = read_dashboard_daily_report(daily_report_path)
+        raw_content = str(payload.get("content") or "")
+        payload["raw_content"] = raw_content
+        payload["content"] = localize_dashboard_report_content(raw_content)
+        return jsonify(payload)
 
     @app.get("/api/dashboard-summary")
     def dashboard_summary():
@@ -58,6 +66,7 @@ def create_flask_app(
             build_dashboard_summary(
                 trade_plan_path=trade_plan_path,
                 daily_report_path=daily_report_path,
+                config_path=config_path,
                 dashboard_poll_interval_seconds=dashboard_poll_interval_seconds,
                 dashboard_min_poll_interval_seconds=dashboard_min_poll_interval_seconds,
             )
@@ -90,7 +99,7 @@ def create_flask_app(
         from flask import request
 
         query = (request.args.get("query") or request.args.get("symbol") or "").strip()
-        symbol = resolve_symbol(query, trade_plan_path)
+        symbol = resolve_symbol(query, trade_plan_path, config_path=config_path)
         if not symbol:
             return jsonify({"error": "未找到匹配标的"}), 404
 
@@ -126,7 +135,12 @@ def create_flask_app(
     return app
 
 
-def resolve_symbol(query: str, trade_plan_path: str | Path = "reports/trade_plan.json") -> str | None:
+def resolve_symbol(
+    query: str,
+    trade_plan_path: str | Path = "reports/trade_plan.json",
+    *,
+    config_path: str | Path | None = None,
+) -> str | None:
     normalized = "".join(ch for ch in query.strip() if ch.isalnum())
     if len(normalized) == 6 and normalized.isdigit():
         return normalized
@@ -152,6 +166,8 @@ def resolve_symbol(query: str, trade_plan_path: str | Path = "reports/trade_plan
 
     for symbol, name in SECURITY_NAME_MAP.items():
         candidates.append((symbol, name, SECURITY_INDEX_MAP.get(symbol, "")))
+    for symbol in load_dashboard_config_symbols(config_path):
+        candidates.append((symbol, SECURITY_NAME_MAP.get(symbol, symbol), SECURITY_INDEX_MAP.get(symbol, "")))
 
     for symbol, name, index_name in candidates:
         haystack = " ".join([symbol, name, index_name]).lower()
@@ -383,6 +399,7 @@ def serve_dashboard(
     *,
     trade_plan_path: str | Path = "reports/trade_plan.json",
     daily_report_path: str | Path = "reports/daily_report.md",
+    config_path: str | Path | None = None,
     host: str = "127.0.0.1",
     port: int = 8765,
     dashboard_poll_interval_seconds: int = 30,
@@ -391,6 +408,7 @@ def serve_dashboard(
     app = create_flask_app(
         trade_plan_path=trade_plan_path,
         daily_report_path=daily_report_path,
+        config_path=config_path,
         dashboard_poll_interval_seconds=dashboard_poll_interval_seconds,
         dashboard_min_poll_interval_seconds=dashboard_min_poll_interval_seconds,
     )
