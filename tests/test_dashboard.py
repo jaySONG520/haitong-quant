@@ -66,6 +66,8 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("最后刷新", html)
             self.assertIn("下次刷新", html)
             self.assertIn("行情来源", html)
+            self.assertIn("价格趋势", html)
+            self.assertIn("计划触发价", html)
             self.assertIn("价格执行计划", html)
             self.assertIn("计划买入价", html)
             self.assertIn("止盈卖出价", html)
@@ -138,6 +140,8 @@ class DashboardTests(unittest.TestCase):
             payload = response.get_json()
 
             self.assertEqual(payload["metrics"]["candidate_count"], 1)
+            self.assertEqual(payload["candidates"][0]["name"], "中证500ETF南方")
+            self.assertEqual(payload["candidates"][0]["index_name"], "中证500")
             self.assertEqual(payload["candidates"][0]["status_label"], "观察")
             self.assertEqual(payload["candidates"][0]["entry_price"], 7.1)
             self.assertEqual(payload["candidates"][0]["stop_loss_price"], 6.8)
@@ -197,10 +201,69 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()
             self.assertEqual(payload["510500"]["price"], 7.123)
+            self.assertEqual(payload["510500"]["name"], "中证500ETF")
             self.assertEqual(payload["510500"]["source"], "live")
             self.assertEqual(payload["__meta__"]["source"], "live")
             self.assertEqual(payload["__meta__"]["source_label"], "实时行情")
             self.assertIn("refreshed_at_label", payload["__meta__"])
+
+    def test_security_trend_api_resolves_name_and_returns_klines(self):
+        try:
+            import flask  # noqa: F401
+        except ImportError:
+            self.skipTest("Flask is not installed")
+
+        from haitong_quant.ops.web_dashboard import create_flask_app
+
+        class FakeResponse:
+            def __init__(self, text: str, encoding: str = "utf-8"):
+                self.text = text
+                self.encoding = encoding
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return self.text.encode(self.encoding)
+
+        def fake_urlopen(req, timeout=0):
+            url = getattr(req, "full_url", str(req))
+            if "qt.gtimg.cn" in url:
+                return FakeResponse('v_s_sh510500="1~中证500ETF南方~510500~8.424~-0.019~-0.23~1035812~87359~~365.18~ETF~";', "gbk")
+            return FakeResponse(
+                json.dumps(
+                    {
+                        "data": {
+                            "klines": [
+                                "2026-05-01,8.000,8.100,8.120,7.980,1,1,1,1,1,1",
+                                "2026-05-02,8.100,8.200,8.220,8.080,1,1,1,1,1,1",
+                                "2026-05-03,8.200,8.300,8.320,8.180,1,1,1,1,1,1",
+                                "2026-05-04,8.300,8.424,8.450,8.250,1,1,1,1,1,1",
+                            ]
+                        }
+                    }
+                )
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = create_flask_app(
+                trade_plan_path=Path(tmp) / "trade_plan.json",
+                daily_report_path=Path(tmp) / "daily_report.md",
+            )
+            client = app.test_client()
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                response = client.get("/api/security-trend?query=中证500ETF南方")
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["symbol"], "510500")
+            self.assertEqual(payload["name"], "中证500ETF南方")
+            self.assertEqual(payload["price"], 8.424)
+            self.assertEqual(len(payload["klines"]), 4)
+            self.assertIn("trend_label", payload["trend"])
 
 
 if __name__ == "__main__":

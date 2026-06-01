@@ -48,6 +48,36 @@ NEWS_TRANSLATIONS = {
     "Sample neutral small/mid-cap ETF news input": "样例新闻：中小盘ETF信息中性",
     "no reviewed recent-news score supplied": "未提供已复核新闻分数",
 }
+SECURITY_NAME_MAP = {
+    "510300": "沪深300ETF",
+    "510050": "上证50ETF",
+    "159915": "创业板ETF",
+    "512100": "中证1000ETF南方",
+    "159922": "中证500ETF",
+    "510500": "中证500ETF南方",
+    "518880": "黄金ETF华安",
+    "159601": "A50ETF",
+    "588000": "科创50ETF",
+    "159919": "沪深300ETF",
+    "515790": "光伏ETF",
+    "159869": "游戏ETF",
+    "516160": "新能源ETF",
+}
+SECURITY_INDEX_MAP = {
+    "510300": "沪深300",
+    "510050": "上证50",
+    "159915": "创业板指",
+    "512100": "中证1000",
+    "159922": "中证500",
+    "510500": "中证500",
+    "518880": "黄金现货",
+    "159601": "富时中国A50",
+    "588000": "科创50",
+    "159919": "沪深300",
+    "515790": "中证光伏产业",
+    "159869": "中证动漫游戏",
+    "516160": "CS新能源",
+}
 
 
 def render_static_dashboard(
@@ -151,6 +181,9 @@ def _load_trade_plan_items(path: str | Path) -> list[dict]:
 
 def _normalize_candidate(item: dict[str, Any], index: int) -> dict[str, Any]:
     status = str(item.get("status") or "")
+    symbol = str(item.get("symbol") or "")
+    name = str(item.get("name") or SECURITY_NAME_MAP.get(symbol) or symbol)
+    index_name = str(item.get("index_name") or item.get("index") or SECURITY_INDEX_MAP.get(symbol) or "")
     entry_price = _to_float(item.get("entry_price"))
     signal_close = _to_float(item.get("signal_close"))
     stop_price = _to_float(item.get("stop_loss_price_if_entry_fills"))
@@ -160,8 +193,9 @@ def _normalize_candidate(item: dict[str, Any], index: int) -> dict[str, Any]:
     entry_distance_pct = _ratio(entry_price - signal_close, signal_close)
     risk_reward = (profit_gap_pct / stop_gap_pct) if stop_gap_pct > 0 else 0.0
     return {
-        "symbol": str(item.get("symbol") or ""),
-        "name": str(item.get("name") or item.get("symbol") or ""),
+        "symbol": symbol,
+        "name": name,
+        "index_name": index_name,
         "status": status,
         "status_label": STATUS_LABELS.get(status, "待确认"),
         "status_tone": STATUS_TONES.get(status, "muted"),
@@ -581,7 +615,7 @@ __DASHBOARD_STYLE__
                   <th>名称</th>
                   <th>跟踪指数</th>
                   <th>状态</th>
-                  <th>触发价格区间(元)</th>
+                  <th title="这是交易计划生成的固定风控价位，不随实时行情自动漂移。">计划触发价(元)</th>
                   <th>最新价(元)</th>
                   <th>涨跌幅(%)</th>
                   <th>触发信号</th>
@@ -686,10 +720,33 @@ __DASHBOARD_STYLE__
               </div>
             </div>
 
+            <!-- 价格趋势 -->
+            <div class="det-section">
+              <div class="det-sec-header">
+                <h4 class="det-sec-title">价格趋势</h4>
+                <button type="button" class="mini-refresh-btn" id="detTrendRefreshBtn" onclick="refreshSelectedTrend()">刷新趋势</button>
+              </div>
+              <div class="trend-summary-grid">
+                <div><span>实时/最近价</span><strong id="trendLatestPrice">--</strong></div>
+                <div><span>日涨跌幅</span><strong id="trendChangePct">--</strong></div>
+                <div><span>趋势判断</span><strong id="trendLabel">加载中</strong></div>
+                <div><span>20日收益</span><strong id="trendReturn20">--</strong></div>
+              </div>
+              <div class="trend-chart-shell">
+                <svg viewBox="0 0 360 120" class="trend-chart-svg" aria-label="价格趋势图">
+                  <line x1="0" y1="20" x2="360" y2="20" class="trend-grid-line"/>
+                  <line x1="0" y1="60" x2="360" y2="60" class="trend-grid-line"/>
+                  <line x1="0" y1="100" x2="360" y2="100" class="trend-grid-line"/>
+                  <polyline id="trendSparkline" points="" fill="none"/>
+                </svg>
+              </div>
+              <p class="trend-status" id="trendStatus">输入代码或名称搜索后，这里会显示对应标的的价格趋势。</p>
+            </div>
+
             <!-- 触发价格区间及标尺 -->
             <div class="det-section">
               <div class="det-sec-header">
-                <h4 class="det-sec-title">触发价格区间</h4>
+                <h4 class="det-sec-title">计划触发价格区间</h4>
                 <span class="det-sec-meta" id="detPriceTime">更新时间：15:00:00</span>
               </div>
               <div class="slider-labels">
@@ -1751,7 +1808,36 @@ body {
 }
 
 .td-name {
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.td-name .name-main {
+  display: block;
+}
+
+.td-name .name-sub {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
   font-weight: 600;
+}
+
+.price-plan-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.price-plan-cell strong {
+  color: var(--text-main);
+}
+
+.price-plan-cell small {
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
 }
 
 .badge {
@@ -1781,6 +1867,85 @@ body {
 .badge-red {
   background-color: var(--color-red-soft);
   color: var(--color-red);
+}
+
+.mini-refresh-btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.mini-refresh-btn:hover {
+  border-color: rgba(37, 99, 235, 0.45);
+  background: var(--accent-soft);
+}
+
+.trend-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.trend-summary-grid div {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: var(--bg-main);
+  min-width: 0;
+}
+
+.trend-summary-grid span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.trend-summary-grid strong {
+  display: block;
+  color: var(--text-main);
+  font-size: 15px;
+  font-family: monospace;
+  overflow-wrap: anywhere;
+}
+
+.trend-chart-shell {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  padding: 8px;
+}
+
+.trend-chart-svg {
+  width: 100%;
+  height: 120px;
+  display: block;
+}
+
+.trend-grid-line {
+  stroke: #e2e8f0;
+  stroke-width: 1;
+}
+
+#trendSparkline {
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.trend-status {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* 分页器样式 */
@@ -2839,6 +3004,11 @@ const state = {
   selectedSymbol: null,
   starredSymbols: new Set(["510300", "510050"]),
   assetHidden: false,
+  externalLookupResult: null,
+  lookupTimerId: null,
+  lookupError: "",
+  trendCache: {},
+  trendLoadingSymbol: null,
   
   // 分页数据
   currentPage: 1,
@@ -2870,7 +3040,7 @@ function getFilteredCandidates() {
   const data = getActiveData();
   const query = state.searchQuery.trim().toLowerCase();
   
-  return data.candidates.filter(item => {
+  const matches = data.candidates.filter(item => {
     // 状态过滤
     const statusMatch = state.statusFilter === "all" || item.status === state.statusFilter;
     // 搜索词过滤
@@ -2880,6 +3050,56 @@ function getFilteredCandidates() {
                         (item.index_name && item.index_name.toLowerCase().includes(query));
     return statusMatch && searchMatch;
   });
+  if (!matches.length && state.statusFilter === "all" && state.externalLookupResult && query) {
+    const external = state.externalLookupResult;
+    const externalText = `${external.symbol} ${external.name || ""} ${external.index_name || ""}`.toLowerCase();
+    if (externalText.includes(query)) {
+      return [external];
+    }
+  }
+  return matches;
+}
+
+function pickBestSearchMatch(items, query) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized || !items.length) return null;
+  return items.find(item => item.symbol.toLowerCase() === normalized)
+    || items.find(item => (item.name || "").toLowerCase() === normalized)
+    || items.find(item => (item.name || "").toLowerCase().includes(normalized))
+    || items[0];
+}
+
+function handleSecuritySearchInput() {
+  const query = state.searchQuery.trim();
+  if (state.lookupTimerId) {
+    window.clearTimeout(state.lookupTimerId);
+    state.lookupTimerId = null;
+  }
+  if (!query) {
+    state.externalLookupResult = null;
+    state.lookupError = "";
+    const data = getActiveData();
+    state.selectedSymbol = data.candidates[0]?.symbol || null;
+    return;
+  }
+
+  const matches = getFilteredCandidates();
+  const best = pickBestSearchMatch(matches, query);
+  if (best) {
+    state.externalLookupResult = null;
+    state.lookupError = "";
+    state.selectedSymbol = best.symbol;
+    return;
+  }
+
+  if (state.dataSource !== "real" || !isServiceMode() || query.length < 2) {
+    state.externalLookupResult = null;
+    state.lookupError = query.length >= 2 ? "当前候选池中没有匹配标的。" : "";
+    return;
+  }
+
+  state.lookupError = "正在查询外部行情...";
+  state.lookupTimerId = window.setTimeout(() => lookupExternalSecurity(query), 350);
 }
 
 // 格式化辅助函数
@@ -2894,14 +3114,17 @@ function formatPercent(value) {
 }
 
 function getPlanBuyPrice(item) {
+  if (item && item.is_external_lookup) return Number(item.entry_price || 0);
   return Number(item.entry_price || item.signal_close || 0);
 }
 
 function getPlanTakeProfitPrice(item) {
+  if (item && item.is_external_lookup) return Number(item.take_profit_price || item.take_profit || 0);
   return Number(item.take_profit_price || item.take_profit || item.take_profit_price_if_entry_fills || 0);
 }
 
 function getPlanStopLossPrice(item) {
+  if (item && item.is_external_lookup) return Number(item.stop_loss_price || item.stop_price || 0);
   return Number(item.stop_loss_price || item.stop_price || item.stop_loss_price_if_entry_fills || 0);
 }
 
@@ -2958,7 +3181,8 @@ function initDashboard() {
   // 绑定搜索输入
   document.getElementById("searchInput").addEventListener("input", (e) => {
     state.searchQuery = e.target.value;
-    state.currentPage = 1; // 检索重置到第一页
+    state.currentPage = 1;
+    handleSecuritySearchInput();
     renderPanel();
   });
 
@@ -3167,7 +3391,8 @@ function renderOverviewTable(items) {
   document.getElementById("visibleCount").textContent = `共 ${items.length} 条`;
   
   if (!items.length) {
-    tableBody.innerHTML = `<tr><td colspan="12" style="text-align:center;color:var(--text-muted);padding:40px;">暂无可展示的数据。</td></tr>`;
+    const emptyText = state.lookupError || "暂无可展示的数据。";
+    tableBody.innerHTML = `<tr><td colspan="12" style="text-align:center;color:var(--text-muted);padding:40px;">${escapeHtml(emptyText)}</td></tr>`;
     renderPagination(0);
     return;
   }
@@ -3189,15 +3414,19 @@ function renderOverviewTable(items) {
     const chgClass = chgVal === 0 ? "color-neutral" : (isUp ? "color-red font-bold" : "color-green font-bold");
     const chgPrefix = chgVal > 0 ? "+" : "";
     
-    const isRealMode = state.dataSource === "real";
-    const entryTrigStr = isRealMode ? `${formatMoney(item.entry_price)}` : `${formatMoney(item.entry_price)} - ${formatMoney(item.take_profit)}`;
+    const buyPrice = getPlanBuyPrice(item);
+    const takeProfitPrice = getPlanTakeProfitPrice(item);
+    const stopLossPrice = getPlanStopLossPrice(item);
+    const entryTrigStr = item.is_external_lookup
+      ? `<span class="price-plan-cell"><strong>暂无计划</strong><small>仅展示行情</small></span>`
+      : `<span class="price-plan-cell"><strong>买 ${formatMoney(buyPrice)}</strong><small>止 ${formatMoney(stopLossPrice)} / 盈 ${formatMoney(takeProfitPrice)}</small></span>`;
     
     return `
       <tr class="${rowClass}" onclick="selectRow('${item.symbol}')">
         <td onclick="event.stopPropagation()"><input type="checkbox" value="${item.symbol}"></td>
         <td class="${starClass}" onclick="event.stopPropagation(); toggleStar('${item.symbol}')">★</td>
         <td class="td-symbol">${escapeHtml(item.symbol)}</td>
-        <td class="td-name">${escapeHtml(item.name || getFundName(item.symbol))}</td>
+        <td class="td-name"><span class="name-main">${escapeHtml(item.name || getFundName(item.symbol))}</span><span class="name-sub">${escapeHtml(item.symbol)}</span></td>
         <td class="color-neutral">${escapeHtml(item.index_name || item.symbol)}</td>
         <td><span class="badge ${getStatusBadgeClass(item.status)}">${escapeHtml(item.status_label || getStatusLabel(item.status))}</span></td>
         <td class="font-mono">${entryTrigStr}</td>
@@ -3369,7 +3598,10 @@ function renderReportTab() {
 // 9. 联动右侧详情面板渲染
 function renderRightDetail() {
   const data = getActiveData();
-  const selected = data.candidates.find(item => item.symbol === state.selectedSymbol) || data.candidates[0];
+  const externalSelected = state.externalLookupResult && state.externalLookupResult.symbol === state.selectedSymbol
+    ? state.externalLookupResult
+    : null;
+  const selected = data.candidates.find(item => item.symbol === state.selectedSymbol) || externalSelected || data.candidates[0];
   
   const emptyState = document.getElementById("detailEmpty");
   const fullContent = document.getElementById("detailContent");
@@ -3386,7 +3618,9 @@ function renderRightDetail() {
   // 渲染头部
   document.getElementById("detSymbol").textContent = selected.symbol;
   document.getElementById("detName").textContent = selected.name || getFundName(selected.symbol);
-  document.getElementById("detSubtitle").textContent = `跟踪指数：${escapeHtml(selected.index_name || selected.index || "大盘指数")}`;
+  document.getElementById("detSubtitle").textContent = selected.is_external_lookup
+    ? `行情查询：${escapeHtml(selected.name || selected.symbol)}`
+    : `跟踪指数：${escapeHtml(selected.index_name || selected.index || "大盘指数")}`;
   
   const isStarred = state.starredSymbols.has(selected.symbol);
   document.getElementById("detStarBtn").classList.toggle("starred", isStarred);
@@ -3399,6 +3633,8 @@ function renderRightDetail() {
   document.getElementById("detIndex").textContent = selected.index_name || selected.index || "A股大盘";
   document.getElementById("detIopv").textContent = formatMoney(selected.signal_close - 0.002);
   document.getElementById("detLatestPrice").textContent = formatMoney(selected.signal_close);
+  renderTrendSection(selected);
+  ensureTrendData(selected.symbol);
   
   const discountVal = (selected.symbol === "510300" || selected.symbol === "512100") ? "0.05%" : "0.02%";
   document.getElementById("detDiscount").textContent = discountVal;
@@ -3424,16 +3660,19 @@ function renderRightDetail() {
   document.getElementById("detSliderLower").textContent = formatMoney(lowerVal);
   document.getElementById("detSliderMiddle").textContent = formatMoney(middleVal);
   document.getElementById("detSliderUpper").textContent = formatMoney(upperVal);
+  document.getElementById("detPriceTime").textContent = selected.is_external_lookup
+    ? "无交易计划：仅展示行情"
+    : "计划价位：策略生成后固定，不随实时价自动漂移";
 
-  document.getElementById("detPlanBuy").textContent = formatMoney(buyVal);
-  document.getElementById("detPlanTakeProfit").textContent = formatMoney(takeProfitVal);
-  document.getElementById("detPlanStopLoss").textContent = formatMoney(stopLossVal);
+  document.getElementById("detPlanBuy").textContent = buyVal > 0 ? formatMoney(buyVal) : "--";
+  document.getElementById("detPlanTakeProfit").textContent = takeProfitVal > 0 ? formatMoney(takeProfitVal) : "--";
+  document.getElementById("detPlanStopLoss").textContent = stopLossVal > 0 ? formatMoney(stopLossVal) : "--";
   const entryDistance = selected.entry_distance_pct || (selected.signal_close > 0 ? (buyVal - selected.signal_close) / selected.signal_close : 0);
   const profitSpace = selected.profit_gap_pct || (buyVal > 0 ? (takeProfitVal - buyVal) / buyVal : 0);
   const stopSpace = selected.stop_gap_pct || (buyVal > 0 ? (buyVal - stopLossVal) / buyVal : 0);
-  document.getElementById("detPlanBuyNote").textContent = `距当前 ${formatPercent(entryDistance)}`;
-  document.getElementById("detPlanProfitNote").textContent = `目标空间 ${formatPercent(profitSpace)}`;
-  document.getElementById("detPlanStopNote").textContent = `止损空间 ${formatPercent(stopSpace)}`;
+  document.getElementById("detPlanBuyNote").textContent = selected.is_external_lookup ? "未进入当前交易计划" : `距当前 ${formatPercent(entryDistance)}`;
+  document.getElementById("detPlanProfitNote").textContent = selected.is_external_lookup ? "无策略目标价" : `目标空间 ${formatPercent(profitSpace)}`;
+  document.getElementById("detPlanStopNote").textContent = selected.is_external_lookup ? "无策略止损价" : `止损空间 ${formatPercent(stopSpace)}`;
   
   // 精算指针位置
   // SVG 宽度为 380px，分两段。
@@ -3507,14 +3746,171 @@ function renderRightDetail() {
   document.getElementById("detFeeDrag").textContent = `￥${feeDragVal.toFixed(2)}`;
 }
 
+function renderTrendSection(selected) {
+  const cached = state.trendCache[selected.symbol];
+  const latestEl = document.getElementById("trendLatestPrice");
+  const changeEl = document.getElementById("trendChangePct");
+  const labelEl = document.getElementById("trendLabel");
+  const returnEl = document.getElementById("trendReturn20");
+  const lineEl = document.getElementById("trendSparkline");
+  const statusEl = document.getElementById("trendStatus");
+  if (!latestEl || !changeEl || !labelEl || !returnEl || !lineEl || !statusEl) return;
+
+  if (!cached) {
+    latestEl.textContent = formatMoney(selected.signal_close);
+    const chg = Number(selected.change_pct || 0);
+    changeEl.textContent = `${chg > 0 ? "+" : ""}${chg.toFixed(2)}%`;
+    changeEl.className = chg === 0 ? "color-neutral" : (chg > 0 ? "color-red" : "color-green");
+    labelEl.textContent = state.trendLoadingSymbol === selected.symbol ? "加载中" : "待刷新";
+    returnEl.textContent = "--";
+    lineEl.setAttribute("points", "");
+    statusEl.textContent = state.lookupError || "正在读取最近日线与实时价格。";
+    return;
+  }
+
+  latestEl.textContent = formatMoney(cached.price || selected.signal_close);
+  const chg = Number(cached.change_pct ?? selected.change_pct ?? 0);
+  changeEl.textContent = `${chg > 0 ? "+" : ""}${chg.toFixed(2)}%`;
+  changeEl.className = chg === 0 ? "color-neutral" : (chg > 0 ? "color-red" : "color-green");
+  labelEl.textContent = cached.trend?.trend_label || "待确认";
+  returnEl.textContent = cached.trend?.return_20d_pct !== null && cached.trend?.return_20d_pct !== undefined
+    ? `${cached.trend.return_20d_pct > 0 ? "+" : ""}${Number(cached.trend.return_20d_pct).toFixed(2)}%`
+    : "--";
+  returnEl.className = Number(cached.trend?.return_20d_pct || 0) >= 0 ? "color-red" : "color-green";
+  lineEl.setAttribute("points", buildSparklinePoints(cached.klines || []));
+  const trendSource = cached.trend_source_label ? `，趋势源：${cached.trend_source_label}` : "";
+  statusEl.textContent = `${cached.name || selected.name || selected.symbol}，${cached.source_label || "行情"}${trendSource}，更新时间 ${cached.updated_at_label || state.lastRefreshAt}`;
+}
+
+function buildSparklinePoints(klines) {
+  const closes = (klines || []).map(item => Number(item.close)).filter(value => Number.isFinite(value) && value > 0);
+  if (closes.length < 2) return "";
+  const minVal = Math.min(...closes);
+  const maxVal = Math.max(...closes);
+  const range = Math.max(0.000001, maxVal - minVal);
+  return closes.map((value, index) => {
+    const x = closes.length === 1 ? 180 : (index / (closes.length - 1)) * 360;
+    const y = 108 - ((value - minVal) / range) * 96;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+}
+
+function ensureTrendData(symbol, force = false) {
+  if (!symbol || !isServiceMode()) return;
+  const cached = state.trendCache[symbol];
+  if (!force && cached && Date.now() - cached.fetched_at_ms < 60000) return;
+  if (state.trendLoadingSymbol === symbol) return;
+  state.trendLoadingSymbol = symbol;
+  fetch(`/api/security-trend?query=${encodeURIComponent(symbol)}&ts=${Date.now()}`, { cache: "no-store" })
+    .then(res => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })
+    .then(payload => {
+      if (payload.error) throw new Error(payload.error);
+      payload.fetched_at_ms = Date.now();
+      state.trendCache[payload.symbol] = payload;
+      mergeTrendPayloadIntoCandidate(payload);
+      state.lookupError = "";
+      if (state.selectedSymbol === payload.symbol) {
+        renderPanel();
+      }
+    })
+    .catch(err => {
+      state.lookupError = "趋势查询失败：保留当前看板数据。";
+      console.warn("趋势查询失败", err);
+      renderTrendSection(getCurrentDetailItem());
+    })
+    .finally(() => {
+      if (state.trendLoadingSymbol === symbol) state.trendLoadingSymbol = null;
+    });
+}
+
+function refreshSelectedTrend() {
+  if (!state.selectedSymbol) return;
+  ensureTrendData(state.selectedSymbol, true);
+  showToast("正在刷新价格趋势。");
+}
+
+function lookupExternalSecurity(query) {
+  fetch(`/api/security-trend?query=${encodeURIComponent(query)}&ts=${Date.now()}`, { cache: "no-store" })
+    .then(res => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })
+    .then(payload => {
+      if (payload.error) throw new Error(payload.error);
+      payload.fetched_at_ms = Date.now();
+      state.trendCache[payload.symbol] = payload;
+      state.externalLookupResult = normalizeLookupCandidate(payload);
+      state.selectedSymbol = payload.symbol;
+      state.lookupError = "";
+      renderPanel();
+      showToast(`已加载 ${payload.name || payload.symbol} 的趋势和价格。`);
+    })
+    .catch(err => {
+      state.externalLookupResult = null;
+      state.lookupError = "未找到匹配标的或行情源暂不可用。";
+      console.warn("外部标的查询失败", err);
+      renderPanel();
+    });
+}
+
+function normalizeLookupCandidate(payload) {
+  return {
+    symbol: payload.symbol,
+    name: payload.name || getFundName(payload.symbol),
+    index_name: payload.asset_type || "A股/ETF",
+    status: "lookup_only",
+    status_label: "行情查询",
+    status_tone: "muted",
+    score: 0,
+    signal_close: Number(payload.price || 0),
+    entry_price: 0,
+    stop_loss_price: 0,
+    take_profit_price: 0,
+    change_pct: Number(payload.change_pct || 0),
+    signal_name: "仅查行情",
+    risk_level: "未评级",
+    date: payload.updated_at_label || "",
+    advantages: ["未进入当前量化候选池"],
+    risks: ["仅展示行情，不生成交易计划"],
+    is_external_lookup: true,
+  };
+}
+
+function mergeTrendPayloadIntoCandidate(payload) {
+  const data = getActiveData();
+  const candidate = data.candidates.find(item => item.symbol === payload.symbol);
+  if (candidate) {
+    candidate.name = payload.name || candidate.name;
+    candidate.signal_close = Number(payload.price || candidate.signal_close || 0);
+    candidate.change_pct = Number(payload.change_pct ?? candidate.change_pct ?? 0);
+    candidate.quote_source = payload.source || candidate.quote_source;
+    candidate.quote_refreshed_at = payload.updated_at || candidate.quote_refreshed_at;
+  }
+  if (state.externalLookupResult && state.externalLookupResult.symbol === payload.symbol) {
+    state.externalLookupResult = normalizeLookupCandidate(payload);
+  }
+}
+
+function getCurrentDetailItem() {
+  const data = getActiveData();
+  return data.candidates.find(item => item.symbol === state.selectedSymbol)
+    || (state.externalLookupResult && state.externalLookupResult.symbol === state.selectedSymbol ? state.externalLookupResult : null)
+    || data.candidates[0]
+    || { symbol: "", name: "", signal_close: 0, change_pct: 0 };
+}
+
 // 辅助数据填充函数
 function getFundName(symbol) {
   if (symbol === "510300") return "沪深300ETF";
   if (symbol === "510050") return "上证50ETF";
   if (symbol === "159915") return "创业板ETF";
-  if (symbol === "512100") return "中证1000ETF";
+  if (symbol === "512100") return "中证1000ETF南方";
   if (symbol === "159922") return "中证500ETF";
-  if (symbol === "510500") return "中证500ETF";
+  if (symbol === "510500") return "中证500ETF南方";
+  if (symbol === "518880") return "黄金ETF华安";
   if (symbol === "159601") return "A50ETF";
   if (symbol === "588000") return "科创50ETF";
   if (symbol === "159919") return "沪深300ETF";
@@ -3528,6 +3924,7 @@ function getStatusLabel(status) {
   if (status === "entry_candidate") return "可入场";
   if (status === "watch_only") return "观察";
   if (status === "skip") return "跳过";
+  if (status === "lookup_only") return "行情查询";
   return "待确认";
 }
 
@@ -3535,6 +3932,7 @@ function getStatusBadgeClass(status) {
   if (status === "entry_candidate") return "badge-green";
   if (status === "watch_only") return "badge-orange";
   if (status === "skip") return "badge-gray";
+  if (status === "lookup_only") return "badge-gray";
   return "badge-gray";
 }
 
@@ -4072,7 +4470,17 @@ function applyDashboardSummary(summary) {
 
   if (state.dataSource === "real") {
     const stillExists = REAL_DATA.candidates.some(item => item.symbol === selectedBefore);
-    state.selectedSymbol = stillExists ? selectedBefore : (REAL_DATA.candidates[0]?.symbol || null);
+    const query = state.searchQuery.trim();
+    if (state.externalLookupResult && query && state.externalLookupResult.symbol === selectedBefore) {
+      state.selectedSymbol = selectedBefore;
+    } else if (stillExists) {
+      state.selectedSymbol = selectedBefore;
+    } else if (query) {
+      const best = pickBestSearchMatch(getFilteredCandidates(), query);
+      state.selectedSymbol = best ? best.symbol : selectedBefore;
+    } else {
+      state.selectedSymbol = REAL_DATA.candidates[0]?.symbol || null;
+    }
     renderKPIAndTopbar();
     renderPanel();
   }
@@ -4119,6 +4527,9 @@ function runL1RealtimePriceTicker() {
       if (priceMap[c.symbol]) {
         anyQuote = true;
         const info = priceMap[c.symbol];
+        if (info.name) {
+          c.name = info.name;
+        }
         if (Number(c.signal_close) !== Number(info.price)) {
           const changePct = Number(info.change_pct || 0);
           c.signal_close = Number(info.price || 0);
