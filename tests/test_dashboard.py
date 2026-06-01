@@ -142,6 +142,8 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(payload["metrics"]["candidate_count"], 1)
             self.assertEqual(payload["candidates"][0]["name"], "中证500ETF南方")
             self.assertEqual(payload["candidates"][0]["index_name"], "中证500")
+            self.assertEqual(payload["candidates"][0]["plan_signal_close"], 0.0)
+            self.assertEqual(payload["candidates"][0]["date"], "2026-05-30")
             self.assertEqual(payload["candidates"][0]["status_label"], "观察")
             self.assertEqual(payload["candidates"][0]["entry_price"], 7.1)
             self.assertEqual(payload["candidates"][0]["stop_loss_price"], 6.8)

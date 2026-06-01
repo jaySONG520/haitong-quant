@@ -117,7 +117,9 @@ def build_dashboard_summary(
     items = payload.get("items", [])
     if not isinstance(items, list):
         items = []
-    candidates = [_normalize_candidate(item, index) for index, item in enumerate(items)]
+    generated_at = str(payload.get("generated_at") or _mtime_iso(trade_path) or "")
+    plan_date = _date_label(generated_at)
+    candidates = [_normalize_candidate(item, index, generated_at=generated_at, plan_date=plan_date) for index, item in enumerate(items)]
     daily_content = _read_text(daily_path)
     warnings = []
     if not trade_path.exists():
@@ -126,8 +128,8 @@ def build_dashboard_summary(
         warnings.append("未找到研究日报文件，日报区域为空。")
     if not candidates:
         warnings.append("当前没有可展示的候选标的。")
-
-    generated_at = str(payload.get("generated_at") or _mtime_iso(trade_path) or "")
+    elif payload.get("config"):
+        warnings.append(f"当前看板仅展示交易计划中的 {len(candidates)} 个候选，不代表全市场扫描结果；扩大股票池需要更新配置或重新运行 universe/pipeline。")
     min_interval = max(1, int(dashboard_min_poll_interval_seconds or 5))
     default_interval = max(min_interval, int(dashboard_poll_interval_seconds or 30))
     refreshed_at = datetime.now().isoformat(timespec="seconds")
@@ -179,7 +181,7 @@ def _load_trade_plan_items(path: str | Path) -> list[dict]:
     return items if isinstance(items, list) else []
 
 
-def _normalize_candidate(item: dict[str, Any], index: int) -> dict[str, Any]:
+def _normalize_candidate(item: dict[str, Any], index: int, *, generated_at: str = "", plan_date: str = "") -> dict[str, Any]:
     status = str(item.get("status") or "")
     symbol = str(item.get("symbol") or "")
     name = str(item.get("name") or SECURITY_NAME_MAP.get(symbol) or symbol)
@@ -202,6 +204,9 @@ def _normalize_candidate(item: dict[str, Any], index: int) -> dict[str, Any]:
         "status_rank": STATUS_ORDER.get(status, 9),
         "score": _to_float(item.get("total_score")),
         "signal_close": signal_close,
+        "plan_signal_close": signal_close,
+        "plan_generated_at": generated_at,
+        "date": str(item.get("date") or plan_date or ""),
         "entry_price": entry_price,
         "pre_entry_invalidation_price": _to_float(item.get("pre_entry_invalidation_price")),
         "stop_loss_price": stop_price,
@@ -340,6 +345,13 @@ def _format_datetime(value: str) -> str:
         return datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M:%S")
     except ValueError:
         return value
+
+
+def _date_label(value: str) -> str:
+    try:
+        return datetime.fromisoformat(value).strftime("%Y-%m-%d")
+    except ValueError:
+        return value[:10] if value else ""
 
 
 def _to_float(value: Any) -> float:
@@ -1840,6 +1852,11 @@ body {
   font-size: 11px;
 }
 
+.price-plan-cell.plan-danger strong,
+.price-plan-cell.plan-danger small:last-child {
+  color: var(--color-red);
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -3132,6 +3149,79 @@ function getPlanInvalidationPrice(item) {
   return Number(item.pre_entry_invalidation_price || item.invalid_price || 0);
 }
 
+function getPlanHealth(item) {
+  if (!item || item.is_external_lookup) {
+    return { actionable: false, level: "neutral", label: "行情查询", reason: "仅查行情，不生成交易计划", distancePct: 0 };
+  }
+  const current = Number(item.signal_close || 0);
+  const planBasis = Number(item.plan_signal_close || item.entry_price || 0);
+  const buy = getPlanBuyPrice(item);
+  const takeProfit = getPlanTakeProfitPrice(item);
+  const stopLoss = getPlanStopLossPrice(item);
+  if (!current || !buy) {
+    return { actionable: false, level: "warning", label: "待复核", reason: "缺少实时价或计划买入价", distancePct: 0 };
+  }
+  const distancePct = (current - buy) / buy;
+  const basisDriftPct = planBasis > 0 ? Math.abs(current / planBasis - 1) : 0;
+  if (basisDriftPct > 0.25) {
+    return {
+      actionable: false,
+      level: "danger",
+      label: "计划需重算",
+      reason: `实时价相对计划基准价偏离 ${(basisDriftPct * 100).toFixed(1)}%，疑似旧计划或复权口径不一致`,
+      distancePct
+    };
+  }
+  if (takeProfit > 0 && current > takeProfit * 1.01) {
+    return {
+      actionable: false,
+      level: "danger",
+      label: "已超止盈",
+      reason: `实时价已高于计划止盈价 ${formatMoney(takeProfit)}，不能按原入场价追买`,
+      distancePct
+    };
+  }
+  if (stopLoss > 0 && current < stopLoss * 0.99) {
+    return {
+      actionable: false,
+      level: "danger",
+      label: "跌破止损",
+      reason: `实时价已低于计划止损价 ${formatMoney(stopLoss)}，原计划失效`,
+      distancePct
+    };
+  }
+  if (distancePct > 0.03) {
+    return {
+      actionable: false,
+      level: "warning",
+      label: "等待回踩",
+      reason: `实时价高于计划买入价 ${(distancePct * 100).toFixed(1)}%，不应追价入场`,
+      distancePct
+    };
+  }
+  if (distancePct < -0.03) {
+    return {
+      actionable: false,
+      level: "warning",
+      label: "未到触发",
+      reason: `实时价低于计划买入价 ${Math.abs(distancePct * 100).toFixed(1)}%，尚未触发`,
+      distancePct
+    };
+  }
+  return { actionable: true, level: "ok", label: item.status_label || getStatusLabel(item.status), reason: "实时价接近计划触发区间", distancePct };
+}
+
+function getPlanBadgeClass(health, fallbackStatus) {
+  if (health.level === "danger") return "badge-red";
+  if (health.level === "warning") return "badge-orange";
+  if (health.level === "ok") return getStatusBadgeClass(fallbackStatus);
+  return "badge-gray";
+}
+
+function isPlanActionable(item) {
+  return item.status === "entry_candidate" && getPlanHealth(item).actionable;
+}
+
 // 4. UI 绘制核心逻辑
 function initDashboard() {
   if (window.__haitongDashboardInitialized) return;
@@ -3283,11 +3373,11 @@ function renderKPIAndTopbar() {
   
   if (state.dataSource === "real") {
     candCount = data.candidates.length;
-    entryCount = data.candidates.filter(c => c.status === "entry_candidate").length;
+    entryCount = data.candidates.filter(isPlanActionable).length;
     watchCount = data.candidates.filter(c => c.status === "watch_only").length;
     skipCount = data.candidates.filter(c => c.status === "skip").length;
     triggerCount = entryCount; 
-    riskCount = data.metrics.risk_count || 0;
+    riskCount = (data.metrics.risk_count || 0) + data.candidates.filter(c => getPlanHealth(c).level === "danger").length;
     
     // 更新 KPI 面板的值
     document.getElementById("metricCandidates").textContent = candCount;
@@ -3366,7 +3456,7 @@ function renderPanel() {
 function renderStatusFilterTabs() {
   const data = getActiveData();
   const countAll = data.candidates.length;
-  const countEntry = data.candidates.filter(c => c.status === "entry_candidate").length;
+  const countEntry = data.candidates.filter(isPlanActionable).length;
   const countWatch = data.candidates.filter(c => c.status === "watch_only").length;
   const countSkip = data.candidates.filter(c => c.status === "skip").length;
   
@@ -3417,9 +3507,10 @@ function renderOverviewTable(items) {
     const buyPrice = getPlanBuyPrice(item);
     const takeProfitPrice = getPlanTakeProfitPrice(item);
     const stopLossPrice = getPlanStopLossPrice(item);
+    const planHealth = getPlanHealth(item);
     const entryTrigStr = item.is_external_lookup
       ? `<span class="price-plan-cell"><strong>暂无计划</strong><small>仅展示行情</small></span>`
-      : `<span class="price-plan-cell"><strong>买 ${formatMoney(buyPrice)}</strong><small>止 ${formatMoney(stopLossPrice)} / 盈 ${formatMoney(takeProfitPrice)}</small></span>`;
+      : `<span class="price-plan-cell ${planHealth.level === "danger" ? "plan-danger" : ""}"><strong>${planHealth.actionable ? "买" : "旧"} ${formatMoney(buyPrice)}</strong><small>止 ${formatMoney(stopLossPrice)} / 盈 ${formatMoney(takeProfitPrice)}</small><small>${escapeHtml(planHealth.reason)}</small></span>`;
     
     return `
       <tr class="${rowClass}" onclick="selectRow('${item.symbol}')">
@@ -3428,13 +3519,13 @@ function renderOverviewTable(items) {
         <td class="td-symbol">${escapeHtml(item.symbol)}</td>
         <td class="td-name"><span class="name-main">${escapeHtml(item.name || getFundName(item.symbol))}</span><span class="name-sub">${escapeHtml(item.symbol)}</span></td>
         <td class="color-neutral">${escapeHtml(item.index_name || item.symbol)}</td>
-        <td><span class="badge ${getStatusBadgeClass(item.status)}">${escapeHtml(item.status_label || getStatusLabel(item.status))}</span></td>
+        <td><span class="badge ${getPlanBadgeClass(planHealth, item.status)}">${escapeHtml(planHealth.label)}</span></td>
         <td class="font-mono">${entryTrigStr}</td>
         <td class="font-mono font-bold">${formatMoney(item.signal_close)}</td>
         <td class="font-mono ${chgClass}">${chgPrefix}${chgVal.toFixed(2)}%</td>
         <td><span class="badge badge-gray">${escapeHtml(item.signal_name || "因子突破")}</span></td>
-        <td><span class="badge ${item.risk_level === "高" ? "badge-red" : "badge-orange"}">${escapeHtml(item.risk_level || "中")}</span></td>
-        <td class="color-neutral">${escapeHtml(item.date || "2025-05-20")}</td>
+        <td><span class="badge ${planHealth.level === "danger" || item.risk_level === "高" ? "badge-red" : "badge-orange"}">${escapeHtml(planHealth.level === "danger" ? "高" : (item.risk_level || "中"))}</span></td>
+        <td class="color-neutral">${escapeHtml(item.date || "未知")}</td>
       </tr>
     `;
   }).join("");
@@ -3626,8 +3717,9 @@ function renderRightDetail() {
   document.getElementById("detStarBtn").classList.toggle("starred", isStarred);
   
   const badge = document.getElementById("detStatusBadge");
-  badge.textContent = selected.status_label || getStatusLabel(selected.status);
-  badge.className = `det-status-badge ${getStatusBadgeClass(selected.status)}`;
+  const planHealth = getPlanHealth(selected);
+  badge.textContent = planHealth.label;
+  badge.className = `det-status-badge ${getPlanBadgeClass(planHealth, selected.status)}`;
   
   // Tab 1: 核心信息绑定
   document.getElementById("detIndex").textContent = selected.index_name || selected.index || "A股大盘";
@@ -3662,7 +3754,7 @@ function renderRightDetail() {
   document.getElementById("detSliderUpper").textContent = formatMoney(upperVal);
   document.getElementById("detPriceTime").textContent = selected.is_external_lookup
     ? "无交易计划：仅展示行情"
-    : "计划价位：策略生成后固定，不随实时价自动漂移";
+    : `${planHealth.label}：${planHealth.reason}`;
 
   document.getElementById("detPlanBuy").textContent = buyVal > 0 ? formatMoney(buyVal) : "--";
   document.getElementById("detPlanTakeProfit").textContent = takeProfitVal > 0 ? formatMoney(takeProfitVal) : "--";
@@ -3670,7 +3762,7 @@ function renderRightDetail() {
   const entryDistance = selected.entry_distance_pct || (selected.signal_close > 0 ? (buyVal - selected.signal_close) / selected.signal_close : 0);
   const profitSpace = selected.profit_gap_pct || (buyVal > 0 ? (takeProfitVal - buyVal) / buyVal : 0);
   const stopSpace = selected.stop_gap_pct || (buyVal > 0 ? (buyVal - stopLossVal) / buyVal : 0);
-  document.getElementById("detPlanBuyNote").textContent = selected.is_external_lookup ? "未进入当前交易计划" : `距当前 ${formatPercent(entryDistance)}`;
+  document.getElementById("detPlanBuyNote").textContent = selected.is_external_lookup ? "未进入当前交易计划" : planHealth.reason;
   document.getElementById("detPlanProfitNote").textContent = selected.is_external_lookup ? "无策略目标价" : `目标空间 ${formatPercent(profitSpace)}`;
   document.getElementById("detPlanStopNote").textContent = selected.is_external_lookup ? "无策略止损价" : `止损空间 ${formatPercent(stopSpace)}`;
   
@@ -4449,8 +4541,25 @@ async function refreshDashboardData(reason = "manual") {
 
 function applyDashboardSummary(summary) {
   const selectedBefore = state.selectedSymbol;
+  const previousQuotes = new Map((REAL_DATA.candidates || []).map(item => [item.symbol, {
+    signal_close: item.signal_close,
+    change_pct: item.change_pct,
+    quote_source: item.quote_source,
+    quote_refreshed_at: item.quote_refreshed_at,
+    name: item.name,
+  }]));
   REAL_DATA = summary || REAL_DATA;
   REAL_DATA.candidates = REAL_DATA.candidates || [];
+  REAL_DATA.candidates.forEach(item => {
+    const previous = previousQuotes.get(item.symbol);
+    if (previous && previous.quote_source) {
+      item.signal_close = previous.signal_close;
+      item.change_pct = previous.change_pct;
+      item.quote_source = previous.quote_source;
+      item.quote_refreshed_at = previous.quote_refreshed_at;
+      item.name = previous.name || item.name;
+    }
+  });
   REAL_DATA.warnings = REAL_DATA.warnings || [];
   REAL_DATA.daily_report = REAL_DATA.daily_report || { content: "" };
   REAL_DATA.paper = REAL_DATA.paper || { summary: "暂无纸面账户摘要。" };
@@ -4505,7 +4614,7 @@ function runL1RealtimePriceTicker() {
   }
 
   const symbols = data.candidates
-    .map(c => `${c.symbol}:${Number(c.signal_close || c.entry_price || 2).toFixed(4)}`)
+    .map(c => `${c.symbol}:${Number(c.signal_close || c.plan_signal_close || c.entry_price || 2).toFixed(4)}`)
     .join(",");
   
   return fetch(`/api/realtime-prices?symbols=${symbols}`, { cache: "no-store" })
@@ -4547,6 +4656,10 @@ function runL1RealtimePriceTicker() {
               row.style.backgroundColor = "";
             }, 800);
           }
+        }
+        if (Number(c.signal_close) === Number(info.price)) {
+          c.quote_source = info.source || meta.source || "";
+          c.quote_refreshed_at = info.refreshed_at || refreshedAt;
         }
       }
     });
