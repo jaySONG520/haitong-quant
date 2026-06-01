@@ -93,6 +93,8 @@ def _latest_common_date(bars_by_symbol: dict[str, list[Bar]], symbols: tuple[str
     for symbol in symbols:
         bars = bars_by_symbol.get(symbol, [])
         if not bars:
-            raise ValueError(f"No bars loaded for symbol {symbol}")
+            continue
         dates.append(max(bar.date for bar in bars))
+    if not dates:
+        raise ValueError("No bars loaded for any of the symbols in the strategy whitelist")
     return min(dates)

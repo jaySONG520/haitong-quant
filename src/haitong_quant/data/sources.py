@@ -64,8 +64,8 @@ class AKShareDataSource:
         self,
         adjust: str = "qfq",
         asset_type: str = "etf",
-        retries: int = 1,
-        retry_seconds: float = 1.0,
+        retries: int = 4,
+        retry_seconds: float = 2.0,
         use_stock_tx_fallback: bool = True,
         cache: DataCache | None = None,
         cache_max_age_days: int | None = None,
@@ -138,8 +138,8 @@ class AKShareDataSource:
                     if cached_bars:
                         grouped[symbol] = cached_bars
                     else:
-                        LOGGER.error("No SQLite cache available for %s during fallback.", symbol)
-                        raise
+                        LOGGER.error("No SQLite cache available for %s during fallback. Skipping symbol.", symbol)
+                        continue
             else:
                 grouped[symbol] = self._fetch_bars(ak, symbol, start_text, end_text)
         return grouped

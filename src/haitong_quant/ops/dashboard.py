@@ -78,6 +78,9 @@ SECURITY_NAME_MAP = {
     "510880": "红利ETF",
     "512580": "环保ETF",
     "159745": "碳中和ETF",
+    "512760": "有色金属ETF",
+    "515000": "科技ETF",
+    "515070": "人工智能ETF",
     # 商品 ETF
     "518880": "黄金ETF华安",
 }
@@ -111,6 +114,9 @@ SECURITY_INDEX_MAP = {
     "510880": "上证红利",
     "512580": "中证环保",
     "159745": "碳中和",
+    "512760": "中证有色金属",
+    "515000": "科技龙头",
+    "515070": "CS人工智",
     # 商品 ETF
     "518880": "黄金现货",
 }
@@ -3454,23 +3460,32 @@ function formatPercent(value) {
   return `${num.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
+function getPlanScale(item) {
+  if (!item || !item.plan_signal_close || !item.signal_close) return 1.0;
+  return item.signal_close / item.plan_signal_close;
+}
+
 function getPlanBuyPrice(item) {
-  if (item && item.is_external_lookup) return Number(item.entry_price || 0);
-  return Number(item.entry_price || item.signal_close || 0);
+  const scale = getPlanScale(item);
+  if (item && item.is_external_lookup) return Number(item.entry_price || 0) * scale;
+  return Number(item.entry_price || item.signal_close || 0) * scale;
 }
 
 function getPlanTakeProfitPrice(item) {
-  if (item && item.is_external_lookup) return Number(item.take_profit_price || item.take_profit || 0);
-  return Number(item.take_profit_price || item.take_profit || item.take_profit_price_if_entry_fills || 0);
+  const scale = getPlanScale(item);
+  if (item && item.is_external_lookup) return Number(item.take_profit_price || item.take_profit || 0) * scale;
+  return Number(item.take_profit_price || item.take_profit || item.take_profit_price_if_entry_fills || 0) * scale;
 }
 
 function getPlanStopLossPrice(item) {
-  if (item && item.is_external_lookup) return Number(item.stop_loss_price || item.stop_price || 0);
-  return Number(item.stop_loss_price || item.stop_price || item.stop_loss_price_if_entry_fills || 0);
+  const scale = getPlanScale(item);
+  if (item && item.is_external_lookup) return Number(item.stop_loss_price || item.stop_price || 0) * scale;
+  return Number(item.stop_loss_price || item.stop_price || item.stop_loss_price_if_entry_fills || 0) * scale;
 }
 
 function getPlanInvalidationPrice(item) {
-  return Number(item.pre_entry_invalidation_price || item.invalid_price || 0);
+  const scale = getPlanScale(item);
+  return Number(item.pre_entry_invalidation_price || item.invalid_price || 0) * scale;
 }
 
 function getPlanHealth(item) {
@@ -3496,55 +3511,50 @@ function getPlanHealth(item) {
   }
   const distancePct = (current - buy) / buy;
   const basisDriftPct = planBasis > 0 ? Math.abs(current / planBasis - 1) : 0;
+  const res = (() => {
+    if (takeProfit > 0 && current > takeProfit * 1.01) {
+      return {
+        actionable: false,
+        level: "danger",
+        label: "已超止盈",
+        reason: `实时价已高于计划止盈价 ${formatMoney(takeProfit)}，不能按原入场价追买`,
+        distancePct
+      };
+    }
+    if (stopLoss > 0 && current < stopLoss * 0.99) {
+      return {
+        actionable: false,
+        level: "danger",
+        label: "跌破止损",
+        reason: `实时价已低于计划止损价 ${formatMoney(stopLoss)}，原计划失效`,
+        distancePct
+      };
+    }
+    if (distancePct > 0.03) {
+      return {
+        actionable: false,
+        level: "warning",
+        label: "等待回踩",
+        reason: `实时价高于计划买入价 ${(distancePct * 100).toFixed(1)}%，不应追价入场`,
+        distancePct
+      };
+    }
+    if (distancePct < -0.03) {
+      return {
+        actionable: false,
+        level: "warning",
+        label: "未到触发",
+        reason: `实时价低于计划买入价 ${Math.abs(distancePct * 100).toFixed(1)}%，尚未触发`,
+        distancePct
+      };
+    }
+    return { actionable: true, level: "ok", label: item.status_label || getStatusLabel(item.status), reason: "实时价接近计划触发区间", distancePct };
+  })();
+
   if (basisDriftPct > 0.25) {
-    const driftDetail = basisDriftPct > 0.5
-      ? `偏离 ${(basisDriftPct * 100).toFixed(1)}%，交易计划已严重过期或复权口径不一致。请运行 pipeline 命令重新生成。`
-      : `偏离 ${(basisDriftPct * 100).toFixed(1)}%，疑似旧计划需要重新生成。请运行 pipeline 命令更新。`;
-    return {
-      actionable: false,
-      level: "danger",
-      label: "计划需重算",
-      reason: driftDetail,
-      distancePct
-    };
+    res.reason += ` [已等比折算偏离 ${(basisDriftPct * 100).toFixed(1)}%]`;
   }
-  if (takeProfit > 0 && current > takeProfit * 1.01) {
-    return {
-      actionable: false,
-      level: "danger",
-      label: "已超止盈",
-      reason: `实时价已高于计划止盈价 ${formatMoney(takeProfit)}，不能按原入场价追买`,
-      distancePct
-    };
-  }
-  if (stopLoss > 0 && current < stopLoss * 0.99) {
-    return {
-      actionable: false,
-      level: "danger",
-      label: "跌破止损",
-      reason: `实时价已低于计划止损价 ${formatMoney(stopLoss)}，原计划失效`,
-      distancePct
-    };
-  }
-  if (distancePct > 0.03) {
-    return {
-      actionable: false,
-      level: "warning",
-      label: "等待回踩",
-      reason: `实时价高于计划买入价 ${(distancePct * 100).toFixed(1)}%，不应追价入场`,
-      distancePct
-    };
-  }
-  if (distancePct < -0.03) {
-    return {
-      actionable: false,
-      level: "warning",
-      label: "未到触发",
-      reason: `实时价低于计划买入价 ${Math.abs(distancePct * 100).toFixed(1)}%，尚未触发`,
-      distancePct
-    };
-  }
-  return { actionable: true, level: "ok", label: item.status_label || getStatusLabel(item.status), reason: "实时价接近计划触发区间", distancePct };
+  return res;
 }
 
 function getPlanBadgeClass(health, fallbackStatus) {
@@ -4371,6 +4381,9 @@ const FULL_ETF_MAP = {
   "510880": { name: "红利ETF", index: "上证红利" },
   "512580": { name: "环保ETF", index: "中证环保" },
   "159745": { name: "碳中和ETF", index: "碳中和" },
+  "512760": { name: "有色金属ETF", index: "中证有色金属" },
+  "515000": { name: "科技ETF", index: "科技龙头" },
+  "515070": { name: "人工智能ETF", index: "CS人工智" },
   // 扩展覆盖（用于搜索但可能不在当前候选池中）
   "159995": { name: "芯片ETF", index: "国证芯片" },
   "515700": { name: "新能源车ETF汇添富", index: "CS新能车" },
